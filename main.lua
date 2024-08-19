@@ -30,6 +30,13 @@ for k = 1, 10 do
   -- Status bar and background
   local statusBar = api.Interface:CreateStatusBar("bgStatusBar", child, "item_evolving_material")
   child.bgStatusBar = statusBar
+
+  -- Correcting the coords to show only top layer (texture width divided by 2)  
+  local coords = {
+    GetTextureInfo(TEXTURE_PATH.COSPLAY_ENCHANT, "grade_01"):GetCoords()
+  }
+  child.bgStatusBar.statusBar:SetBarTextureCoords(coords[1], coords[2], coords[3] / 2, coords[4])  
+  
   child.bgStatusBar:AddAnchor("TOPLEFT", child, 25, 1)
   child.bgStatusBar:AddAnchor("BOTTOMRIGHT", child, -1, -1)
   child.bgStatusBar:SetMinMaxValues(0, 100)
@@ -1058,4 +1065,4 @@ local function OnUnload()
   
 end
 
-return { name = "Stats Meter", author = "Michaelqt", version = "0.5", desc = "A stats meter covering damage, healing, DPS, HPS, etc.", OnUnload = OnUnload, OnLoad = OnLoad }
+return { name = "Stats Meter", author = "Michaelqt", version = "0.8.0", desc = "A stats meter covering damage, heals and more!", OnUnload = OnUnload, OnLoad = OnLoad }
