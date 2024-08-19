@@ -580,8 +580,10 @@ local function processCombatMessage(targetUnitId, combatEvent, source, target, .
   if unitTypes[targetUnitIdStr] == nil then 
     unitInfo = api.Unit:GetUnitInfoById(targetUnitId)
     if unitInfo ~= nil and unitInfo.type ~= nil then 
-      unitType = unitInfo.type
-      unitTypes[targetUnitIdStr] = unitType
+      if unitInfo.type ~= nil then 
+        unitType = unitInfo.type
+        unitTypes[targetUnitIdStr] = unitType
+      end
     end 
   else
     unitType = unitTypes[targetUnitIdStr]
@@ -1056,4 +1058,4 @@ local function OnUnload()
   
 end
 
-return { name = "Stats Meter", author = "Michaelqt", version = "0.5", OnUnload = OnUnload, OnLoad = OnLoad }
+return { name = "Stats Meter", author = "Michaelqt", version = "0.5", desc = "A stats meter covering damage, healing, DPS, HPS, etc.", OnUnload = OnUnload, OnLoad = OnLoad }
