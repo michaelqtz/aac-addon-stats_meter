@@ -653,10 +653,6 @@ local function Update()
   local sortedUnitIds = getKeysSortedByValue(statNumbers, function(a, b) return a > b end)
 
   statsMeterWnd.moveWnd:SetText("")
-  local base = 1
-  if statNumbers[1] then
-    base = math.max(1, tonumber(dmgNumbers[1]))
-  end
   local labelIndex = 1
   for _, unitId in ipairs(sortedUnitIds) do
     -- Do not write the overall number down
@@ -709,7 +705,6 @@ local function Update()
           local isInPlayerGroup = false
           -- Flag the member as in party if they are
           if unitType == "character" then
-            -- isInPlayerGroup = (api.Team:IsPartyTeam() or api.Team:IsPartyRaid()) and api.Team:GetMemberIndexByName(unitName) > 0
             isInPlayerGroup = (api.Team:IsPartyTeam() or api.Team:GetMemberIndexByName(unitName) ~= nil) and api.Team:GetMemberIndexByName(unitName) > 0
           end
           -- Delete skillsetIcon if it exists
@@ -854,11 +849,11 @@ end
 function statsMeterWnd:OnEvent(event, ...)
   if event == "COMBAT_TEXT" then
     addDmgNumber(unpack(arg))
-    updateDpsHpsNumbers()
+    -- updateDpsHpsNumbers()
   end
   if event == "COMBAT_MSG" then
     processCombatMessage(unpack(arg))
-    updateAbsorbedDmgNumbers()
+    -- updateAbsorbedDmgNumbers()
   end
   if event == "CHAT_JOINED_CHANNEL" then 
     updateLastKnownChannels(unpack(arg))
@@ -883,6 +878,7 @@ end
 
 local lastUpdate = 0
 local lastMeterUpdate = 0
+local lastPauseUpdate = 0
 local oldSettings = tableCopy(settings)
 function statsMeterWnd:OnUpdate(dt)
   -- Update timer label
@@ -891,8 +887,17 @@ function statsMeterWnd:OnUpdate(dt)
   ApplyTextColor(moveWnd.filterButton, FONT_COLOR.WHITE)
   ApplyTextColor(moveWnd.unitFiltersButton, FONT_COLOR.WHITE)
 
-  
-  -- Every 10 seconds, save settings.
+  -- TODO: Pause Timer Hack
+  lastPauseUpdate = lastPauseUpdate + dt
+  if lastPauseUpdate > 900 then 
+    if (stats["total_dmg"]["_OVERALL"] == nil) and
+      (stats["total_healing"]["_OVERALL"] == nil) and
+      (stats["dmg_taken"]["_OVERALL"] == nil and stats["dmg_absorbed_raw"]["_OVERALL"] == nil) then 
+      reinitializeMeter()
+    end 
+    lastPauseUpdate = dt
+  end 
+  -- Every 60 seconds, save settings.
   lastUpdate = lastUpdate + dt
   if oldSettings ~= settings and lastUpdate > 60000 then
     local settings = api.GetSettings("stats_meter")
@@ -906,21 +911,22 @@ function statsMeterWnd:OnUpdate(dt)
     api.SaveSettings()
     lastUpdate = dt
   end 
-  -- Every 0.3 seconds, update meter
+  -- Every 1 second, update meter
   lastMeterUpdate = lastMeterUpdate + dt
-  if lastMeterUpdate > 300 then
-    -- TODO: CURRENT HACK TO MAKE TRACKING PAUSE UNTIL A NUMBER SHOWS UP
-    if (stats["total_dmg"]["_OVERALL"] == nil and stats["dps"]["_OVERALL"] == nil) and
-      (stats["total_healing"]["_OVERALL"] == nil and stats["hps"]["_OVERALL"] == nil) and
-      (stats["dmg_taken"]["_OVERALL"] == nil and stats["dmg_absorbed_raw"]["_OVERALL"] == nil) then 
-      reinitializeMeter()
-    end 
-    removeNilEntriesFromStats(stats)
-    Update()
-    lastMeterUpdate = dt
-  end
+  if lastMeterUpdate > 1000 then
 
-  
+    -- -- TODO: CURRENT HACK TO MAKE TRACKING PAUSE UNTIL A NUMBER SHOWS UP
+    -- if (stats["total_dmg"]["_OVERALL"] == nil and stats["dps"]["_OVERALL"] == nil) and
+    --   (stats["total_healing"]["_OVERALL"] == nil and stats["hps"]["_OVERALL"] == nil) and
+    --   (stats["dmg_taken"]["_OVERALL"] == nil and stats["dmg_absorbed_raw"]["_OVERALL"] == nil) then 
+    --   reinitializeMeter()
+    -- end 
+    lastMeterUpdate = dt
+    removeNilEntriesFromStats(stats)
+    updateDpsHpsNumbers()
+    updateAbsorbedDmgNumbers()
+    Update()
+  end
 end
 statsMeterWnd:SetHandler("OnUpdate", statsMeterWnd.OnUpdate)
 
@@ -960,6 +966,57 @@ end)
 -- Main Filter Dropdown
 function statsMeterWnd.moveWnd.filterButton:SelectedProc()
   selectedPage = statsMeterWnd.moveWnd.filterButton:GetSelectedIndex()
+
+  -- for i = 1, 5000 do
+  --   indexStr = tostring(i)
+  --   randomNum = math.random(5000000, 100000000)
+  --   name = "PogMan" .. indexStr
+
+  --   unitNames[indexStr] = name
+  --   unitFactions[indexStr] = "friendly"
+  --   unitTypes[indexStr] = "character"
+  --   stats['total_dmg'][indexStr] = randomNum
+  --   if stats['total_dmg']['_OVERALL'] ~= nil then 
+  --     stats['total_dmg']['_OVERALL'] = stats['total_dmg']['_OVERALL'] + randomNum
+  --   else
+  --     stats['total_dmg']['_OVERALL'] = randomNum
+  --   end 
+  --   stats['total_healing'][indexStr] = randomNum
+  --   if stats['total_healing']['_OVERALL'] ~= nil then 
+  --     stats['total_healing']['_OVERALL'] = stats['total_healing']['_OVERALL'] + randomNum
+  --   else
+  --     stats['total_healing']['_OVERALL'] = randomNum
+  --   end 
+  --   stats['dmg_taken'][indexStr] = randomNum
+  --   if stats['dmg_taken']['_OVERALL'] ~= nil then 
+  --     stats['dmg_taken']['_OVERALL'] = stats['dmg_taken']['_OVERALL'] + randomNum
+  --   else
+  --     stats['dmg_taken']['_OVERALL'] = randomNum
+  --   end
+  --   stats['dmg_absorbed_raw'][indexStr] = randomNum
+  --   if stats['dmg_absorbed_raw']['_OVERALL'] ~= nil then 
+  --     stats['dmg_absorbed_raw']['_OVERALL'] = stats['dmg_absorbed_raw']['_OVERALL'] + randomNum
+  --   else
+  --     stats['dmg_absorbed_raw']['_OVERALL'] = randomNum
+  --   end 
+    
+  --   api.Log:Info(tostring(randomNum))
+  -- end 
+
+  -- clear the meter to start fresh, and then update it
+  -- for i = 1, #statsMeterWnd.child do
+  --   -- Reset every child that doesn't have unit information written into it
+  --   -- Delete skillsetIcon if it exists
+  --   if statsMeterWnd.child[i].skillsetIcon ~= nil then
+  --     statsMeterWnd.child[i].skillsetIcon:Show(false)
+  --     statsMeterWnd.child[i].skillsetIcon = nil
+  --   end 
+  --   statsMeterWnd.child[i].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
+  --   statsMeterWnd.child[i].bgStatusBar.statLabel:SetText("")
+  --   statsMeterWnd.child[i].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
+  --   statsMeterWnd.child[i].bgStatusBar.statAmtLabel:SetText("")
+  --   statsMeterWnd.child[i].bgStatusBar:SetValue(0)
+  -- end
   Update()
 end
 -- Unit Type Filter Dropdown
@@ -981,7 +1038,7 @@ function statsMeterWnd.moveWnd.unitFiltersButton:SelectedProc()
     -- Delete skillsetIcon if it exists
     if statsMeterWnd.child[i].skillsetIcon ~= nil then
       statsMeterWnd.child[i].skillsetIcon:Show(false)
-      statsMeterWnd.child[i].skillsetIcon = nil
+      -- statsMeterWnd.child[i].skillsetIcon = nil
     end 
     statsMeterWnd.child[i].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
     statsMeterWnd.child[i].bgStatusBar.statLabel:SetText("")
@@ -1065,4 +1122,4 @@ local function OnUnload()
   
 end
 
-return { name = "Stats Meter", author = "Michaelqt", version = "0.8.0", desc = "A stats meter covering damage, heals and more!", OnUnload = OnUnload, OnLoad = OnLoad }
+return { name = "Stats Meter", author = "Michaelqt", version = "1.0.0", desc = "A stats meter covering damage, heals and more!", OnUnload = OnUnload, OnLoad = OnLoad }
