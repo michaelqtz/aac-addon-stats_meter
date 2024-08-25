@@ -749,9 +749,14 @@ local function Update()
           if unitType == "character" then
             if unitName == (api.Unit:GetUnitNameById(api.Unit:GetUnitId("player"))) then
               -- Draw class icon for yourself!
-              local unitClass = unitInfo.class
-              local mainClass = getMainSkillsetName(unitClass)
-              local skillsetIcon = getSkillsetIcon(mainClass, statsMeterWnd.child[labelIndex])
+              if unitInfo ~= nil then
+                if unitInfo["class"] ~= nil then 
+                  local unitClass = unitInfo.class
+                  local mainClass = getMainSkillsetName(unitClass)
+                  local skillsetIcon = getSkillsetIcon(mainClass, statsMeterWnd.child[labelIndex])
+                end 
+              end 
+              
               -- thats you! colour bar turquoise, player text white (default text colour)
               statsMeterWnd.child[labelIndex].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
               statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
@@ -773,9 +778,13 @@ local function Update()
               })
             elseif unitFaction ~= "hostile" and isInPlayerGroup then
               -- Draw class icon for party/raid members!
-              local unitClass = unitInfo.class
-              local mainClass = getMainSkillsetName(unitClass)
-              local skillsetIcon = getSkillsetIcon(mainClass, statsMeterWnd.child[labelIndex])
+              if unitInfo ~= nil then
+                if unitInfo["class"] ~= nil then 
+                  local unitClass = unitInfo.class
+                  local mainClass = getMainSkillsetName(unitClass)
+                  local skillsetIcon = getSkillsetIcon(mainClass, statsMeterWnd.child[labelIndex])
+                end 
+              end 
               -- colour bar blue, player text white (default text colour)
               statsMeterWnd.child[labelIndex].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
               statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
@@ -832,7 +841,7 @@ local function Update()
     for i = labelIndex, #statsMeterWnd.child do
       -- Reset every child that doesn't have unit information written into it
       -- Delete skillsetIcon if it exists
-      if statsMeterWnd.child[i].skillsetIcon ~= nil then
+      if statsMeterWnd.child[i]["skillsetIcon"] ~= nil then
         statsMeterWnd.child[i].skillsetIcon:Show(false)
         statsMeterWnd.child[i].skillsetIcon = nil
       end 
