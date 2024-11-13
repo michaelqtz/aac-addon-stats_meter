@@ -86,8 +86,8 @@ moveWnd.style:SetAlign(ALIGN.LEFT)
 moveWnd:SetText("")
 ApplyTextColor(moveWnd, FONT_COLOR.WHITE)
 -- Drag handlers for dragable bar
-function moveWnd:OnDragStart(arg)
-  if arg == "LeftButton" and api.Input:IsShiftKeyDown() then
+function moveWnd:OnDragStart()
+  if api.Input:IsShiftKeyDown() then
     statsMeterWnd:StartMoving()
     api.Cursor:ClearCursor()
     api.Cursor:SetCursorImage(CURSOR_PATH.MOVE, 0, 0)
@@ -99,7 +99,7 @@ function moveWnd:OnDragStop()
   api.Cursor:ClearCursor()
 end
 moveWnd:SetHandler("OnDragStop", moveWnd.OnDragStop)
-moveWnd:RegisterForDrag("LeftButton")
+moveWnd:EnableDrag(true)
 
 -- Refresh button for timer
 local refreshButton = statsMeterWnd:CreateChildWidget("button", "refreshButton", 0, true)
@@ -202,7 +202,7 @@ function minimizedMoveWnd:OnDragStop()
   api.Cursor:ClearCursor()
 end
 minimizedMoveWnd:SetHandler("OnDragStop", minimizedMoveWnd.OnDragStop)
-minimizedMoveWnd:RegisterForDrag("LeftButton")
+minimizedMoveWnd:EnableDrag(true)
 -- Toggle back to maximized view with this button
 local maximizeButton = minimizedWnd:CreateChildWidget("button", "maximizeButton", 0, true)
 maximizeButton:SetExtent(26, 28)
@@ -1131,4 +1131,4 @@ local function OnUnload()
   
 end
 
-return { name = "Stats Meter", author = "Michaelqt", version = "1.0.0", desc = "A stats meter covering damage, heals and more!", OnUnload = OnUnload, OnLoad = OnLoad }
+return { name = "Stats Meter", author = "Michaelqt", version = "1.0.3", desc = "A stats meter covering damage, heals and more!", OnUnload = OnUnload, OnLoad = OnLoad }
