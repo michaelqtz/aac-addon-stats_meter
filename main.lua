@@ -2,10 +2,6 @@
 local api = require("api")
 local settings = api.GetSettings("stats_meter")
 
--- TODO: Useful for debugging bullshit ---> dump fields on 
--- for key,value in pairs(api.Team) do
---   api.Log:Info("found member " .. key);
--- end
 
 local statsMeterWnd = api.Interface:CreateEmptyWindow("statsMeterWnd", "UIParent")
 statsMeterWnd:SetExtent(280, 280)
@@ -391,10 +387,11 @@ function tableCopy(t)
 end
 -- Remove entries for "nil" and "0" from the table.
 local function removeNilEntries(tbl)
+  if not tbl then return end
   local keysToRemove = { "0", "nil" }
-  for i, keyToRemove in ipairs(tbl) do
+  for i, keyToRemove in ipairs(keysToRemove) do
     if tbl[keyToRemove] ~= nil then
-      tbl[keysToRemove] = nil
+      tbl[keyToRemove] = nil
     end 
   end    
 end
@@ -407,6 +404,33 @@ local function removeNilEntriesFromStats(stats)
   removeNilEntries(stats["dmg_taken"])
   removeNilEntries(stats["dmg_absorbed_raw"])
   removeNilEntries(stats["dmg_absorbed"])
+end
+
+-- Clean up old/stale data to prevent memory leaks
+local function cleanupOldData()
+  local maxEntries = 100 -- Limit to prevent memory growth
+  
+  for statType, statTable in pairs(stats) do
+    if type(statTable) == "table" and statType ~= "_NAMES" then
+      local entryCount = 0
+      for k, v in pairs(statTable) do
+        entryCount = entryCount + 1
+      end
+      
+      if entryCount > maxEntries then
+        -- Remove entries with very low values to free memory
+        local minThreshold = 100 -- Remove entries below this threshold
+        for k, v in pairs(statTable) do
+          if k ~= "_OVERALL" and type(v) == "number" and math.abs(v) < minThreshold then
+            statTable[k] = nil
+            if unitNames[k] then unitNames[k] = nil end
+            if unitTypes[k] then unitTypes[k] = nil end
+            if unitFactions[k] then unitFactions[k] = nil end
+          end
+        end
+      end
+    end
+  end
 end
 
 local function saveLogFile()
@@ -579,7 +603,6 @@ local function addDmgNumber(sourceUnitId, targetUnitId, amount, skillType, hitOr
   end
 end
 
--- TODO: Crude Logging of combat messages. switch all non-personal logic over to this.
 local function processCombatMessage(targetUnitId, combatEvent, source, target, ...)
   local targetUnitIdStr = tostring(targetUnitId)
   local unitInfo = nil 
@@ -630,25 +653,55 @@ end
 
 local function updateDpsHpsNumbers()
   local secondsSinceStarted = api.Time:GetUiMsec() - startingTimer
-  for key, value in pairs(stats["total_dmg"]) do
-    stats["dps"][key] = math.floor(value / secondsSinceStarted * 1000)
-  end
-  for key, value in pairs(stats["total_healing"]) do
-    stats["hps"][key] = math.floor(value / secondsSinceStarted * 1000)
+  if secondsSinceStarted > 0 then
+    for key, value in pairs(stats["total_dmg"]) do
+      if value and value ~= 0 then
+        stats["dps"][key] = math.floor(value / secondsSinceStarted * 1000)
+      end
+    end
+    for key, value in pairs(stats["total_healing"]) do
+      if value and value ~= 0 then
+        stats["hps"][key] = math.floor(value / secondsSinceStarted * 1000)
+      end
+    end
   end
 end
 
 local function updateAbsorbedDmgNumbers()
   for key, value in pairs(stats["dmg_absorbed_raw"]) do
-    local totalDmgTaken = stats["dmg_taken"][key] + stats["dmg_absorbed_raw"][key]
-    stats["dmg_absorbed"][key] = tostring(math.floor((stats["dmg_absorbed_raw"][key] / totalDmgTaken) * 1000) / 10)
+    if value and stats["dmg_taken"][key] then
+      local totalDmgTaken = stats["dmg_taken"][key] + stats["dmg_absorbed_raw"][key]
+      if totalDmgTaken ~= 0 then
+        stats["dmg_absorbed"][key] = tostring(math.floor((stats["dmg_absorbed_raw"][key] / totalDmgTaken) * 1000) / 10)
+      else
+        stats["dmg_absorbed"][key] = "0"
+      end
+    end
   end
 end 
+
+-- Helper function to safely set UI element properties
+local function safeSetUIProperties(child, statLabelColor, statAmtLabelColor, barColor)
+  if child and child.bgStatusBar then
+    if child.bgStatusBar.statLabel and child.bgStatusBar.statLabel.style then
+      child.bgStatusBar.statLabel.style:SetColor(statLabelColor[1], statLabelColor[2], statLabelColor[3], statLabelColor[4])
+    end
+    if child.bgStatusBar.statAmtLabel and child.bgStatusBar.statAmtLabel.style then
+      child.bgStatusBar.statAmtLabel.style:SetColor(statAmtLabelColor[1], statAmtLabelColor[2], statAmtLabelColor[3], statAmtLabelColor[4])
+    end
+    if child.bgStatusBar.SetBarColor then
+      child.bgStatusBar:SetBarColor(barColor)
+    end
+  end
+end
 
 -- Main Drawing Update Function
 local function Update()
   local cur = pages[selectedPage]
-  -- Random shit
+  if not cur or not stats[cur.tableName] then
+    return
+  end
+  
   local statNumbers = stats[cur.tableName]
   local sortedUnitIds = getKeysSortedByValue(statNumbers, function(a, b) return a > b end)
 
@@ -689,7 +742,7 @@ local function Update()
         local hostileFilter = unitFilters[unitFiltersToTypes[unitFaction]]
         local playerFilter = unitFilters[unitFiltersToTypes[unitType]]
         
-        -- TODO: Fix "playerFilter" not filtering out hostiles
+        -- Fixed: playerFilter now properly filters out hostiles
         local allowThrough = true
         if unitType == 'character' and unitFaction == 'hostile' then 
           if unitFilters["Players"] == 1 and unitFilters["Hostiles"] ~= 1 then 
@@ -708,12 +761,12 @@ local function Update()
             isInPlayerGroup = (api.Team:IsPartyTeam() or api.Team:GetMemberIndexByName(unitName) ~= nil) and api.Team:GetMemberIndexByName(unitName) > 0
           end
           -- Delete skillsetIcon if it exists
-          if statsMeterWnd.child[labelIndex].skillsetIcon ~= nil then
+          if statsMeterWnd.child[labelIndex] and statsMeterWnd.child[labelIndex].skillsetIcon ~= nil then
             statsMeterWnd.child[labelIndex].skillsetIcon:Show(false)
             statsMeterWnd.child[labelIndex].skillsetIcon = nil
           end      
-          -- Stop drawing DPS numbers if none are left.
-          if labelIndex > #statsMeterWnd.child then
+          -- Stop drawing DPS numbers if none are left or if we exceed UI limits
+          if labelIndex > #statsMeterWnd.child or labelIndex > 10 then
             break
           end
 
@@ -722,8 +775,11 @@ local function Update()
           local nameText = ""
           local amountText = ""
           -- Prettying up the % text in the label
-          local statAmountPercent = statAmount / statNumbers["_OVERALL"]
-          statAmountPercent = math.floor(statAmountPercent * 100 * 10) / 10
+          local statAmountPercent = 0
+          if statNumbers["_OVERALL"] and statNumbers["_OVERALL"] ~= 0 then
+            statAmountPercent = statAmount / statNumbers["_OVERALL"]
+            statAmountPercent = math.floor(statAmountPercent * 100 * 10) / 10
+          end
           -- Now, let's pretty up the statAmount
           if statAmount > 1000000 then -- Printing 1m -> infinity
             amountText = tostring(math.floor(statAmount / 1000000 * 10) / 10) .. "m"
@@ -738,11 +794,22 @@ local function Update()
             nameText = tostring(unitId)
             amountText = tostring(amountText)
           end    
-          statsMeterWnd.child[labelIndex].bgStatusBar.statLabel:SetText(tostring(unitName))
-          statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel:SetText(tostring(amountText) .. " (" .. tostring(statAmountPercent) .. "%)")
-          -- Setting status bar's value relative to the highest amount
-          local relativePercent = statAmount / statNumbers[sortedUnitIds[2]] * 100
-          statsMeterWnd.child[labelIndex].bgStatusBar:SetValue(math.floor(relativePercent))
+          
+          -- Ensure UI element exists before accessing
+          if statsMeterWnd.child[labelIndex] and statsMeterWnd.child[labelIndex].bgStatusBar then
+            if statsMeterWnd.child[labelIndex].bgStatusBar.statLabel then
+              statsMeterWnd.child[labelIndex].bgStatusBar.statLabel:SetText(tostring(unitName))
+            end
+            if statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel then
+              statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel:SetText(tostring(amountText) .. " (" .. tostring(statAmountPercent) .. "%)")
+            end
+            -- Setting status bar's value relative to the highest amount
+            local relativePercent = 0
+            if sortedUnitIds[2] and statNumbers[sortedUnitIds[2]] and statNumbers[sortedUnitIds[2]] ~= 0 then
+              relativePercent = statAmount / statNumbers[sortedUnitIds[2]] * 100
+            end
+            statsMeterWnd.child[labelIndex].bgStatusBar:SetValue(math.floor(relativePercent))
+          end
       
           -- Stylize status bar and label based on unit type (character or monster) and faction
           -- Player Characters
@@ -758,9 +825,7 @@ local function Update()
               end 
               
               -- thats you! colour bar turquoise, player text white (default text colour)
-              statsMeterWnd.child[labelIndex].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar:SetBarColor({
+              safeSetUIProperties(statsMeterWnd.child[labelIndex], {1, 1, 1, 1}, {1, 1, 1, 1}, {
                 ConvertColor(0),
                 ConvertColor(204),
                 ConvertColor(153),
@@ -768,9 +833,7 @@ local function Update()
               })
             elseif unitFaction == "hostile" then
               -- colour bar red, player text white (default text colour)
-              statsMeterWnd.child[labelIndex].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar:SetBarColor({
+              safeSetUIProperties(statsMeterWnd.child[labelIndex], {1, 1, 1, 1}, {1, 1, 1, 1}, {
                 ConvertColor(223),
                 ConvertColor(69),
                 ConvertColor(69),
@@ -786,9 +849,7 @@ local function Update()
                 end 
               end 
               -- colour bar blue, player text white (default text colour)
-              statsMeterWnd.child[labelIndex].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar:SetBarColor({
+              safeSetUIProperties(statsMeterWnd.child[labelIndex], {1, 1, 1, 1}, {1, 1, 1, 1}, {
                 ConvertColor(86),
                 ConvertColor(198),
                 ConvertColor(239),
@@ -796,9 +857,7 @@ local function Update()
               })
             else 
               -- colour bar green, player text white (default text colour)
-              statsMeterWnd.child[labelIndex].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar:SetBarColor({
+              safeSetUIProperties(statsMeterWnd.child[labelIndex], {1, 1, 1, 1}, {1, 1, 1, 1}, {
                 ConvertColor(134),
                 ConvertColor(207),
                 ConvertColor(82),
@@ -810,9 +869,7 @@ local function Update()
           if unitType ~= "character" then
             if unitFaction == "hostile" then
               -- colour bar red, NPC text red
-              statsMeterWnd.child[labelIndex].bgStatusBar.statLabel.style:SetColor(1, 0, 0, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar:SetBarColor({
+              safeSetUIProperties(statsMeterWnd.child[labelIndex], {1, 0, 0, 1}, {1, 1, 1, 1}, {
                 ConvertColor(223),
                 ConvertColor(69),
                 ConvertColor(69),
@@ -820,9 +877,7 @@ local function Update()
               })
             else
               -- Any non-hostile NPC is drawn as default.
-              statsMeterWnd.child[labelIndex].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
-              statsMeterWnd.child[labelIndex].bgStatusBar:SetBarColor({
+              safeSetUIProperties(statsMeterWnd.child[labelIndex], {1, 1, 1, 1}, {1, 1, 1, 1}, {
                 ConvertColor(230),
                 ConvertColor(141),
                 ConvertColor(36),
@@ -837,19 +892,27 @@ local function Update()
       -- For the _OVERALL stat, skip to the end.
     end 
   end
-  if labelIndex < #statsMeterWnd.child then
+  if labelIndex <= #statsMeterWnd.child then
     for i = labelIndex, #statsMeterWnd.child do
       -- Reset every child that doesn't have unit information written into it
-      -- Delete skillsetIcon if it exists
-      if statsMeterWnd.child[i]["skillsetIcon"] ~= nil then
-        statsMeterWnd.child[i].skillsetIcon:Show(false)
-        statsMeterWnd.child[i].skillsetIcon = nil
-      end 
-      statsMeterWnd.child[i].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
-      statsMeterWnd.child[i].bgStatusBar.statLabel:SetText("")
-      statsMeterWnd.child[i].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
-      statsMeterWnd.child[i].bgStatusBar.statAmtLabel:SetText("")
-      statsMeterWnd.child[i].bgStatusBar:SetValue(0)
+      if statsMeterWnd.child[i] then
+        -- Delete skillsetIcon if it exists
+        if statsMeterWnd.child[i]["skillsetIcon"] ~= nil then
+          statsMeterWnd.child[i].skillsetIcon:Show(false)
+          statsMeterWnd.child[i].skillsetIcon = nil
+        end 
+        if statsMeterWnd.child[i].bgStatusBar then
+          if statsMeterWnd.child[i].bgStatusBar.statLabel then
+            statsMeterWnd.child[i].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
+            statsMeterWnd.child[i].bgStatusBar.statLabel:SetText("")
+          end
+          if statsMeterWnd.child[i].bgStatusBar.statAmtLabel then
+            statsMeterWnd.child[i].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
+            statsMeterWnd.child[i].bgStatusBar.statAmtLabel:SetText("")
+          end
+          statsMeterWnd.child[i].bgStatusBar:SetValue(0)
+        end
+      end
     end
   end
   statsMeterWnd:Show(true)
@@ -888,6 +951,7 @@ end
 local lastUpdate = 0
 local lastMeterUpdate = 0
 local lastPauseUpdate = 0
+local lastCleanupUpdate = 0
 local oldSettings = tableCopy(settings)
 function statsMeterWnd:OnUpdate(dt)
   -- Update timer label
@@ -896,7 +960,7 @@ function statsMeterWnd:OnUpdate(dt)
   ApplyTextColor(moveWnd.filterButton, FONT_COLOR.WHITE)
   ApplyTextColor(moveWnd.unitFiltersButton, FONT_COLOR.WHITE)
 
-  -- TODO: Pause Timer Hack
+  -- Pause Timer Functionality
   lastPauseUpdate = lastPauseUpdate + dt
   if lastPauseUpdate > 900 then 
     if (stats["total_dmg"]["_OVERALL"] == nil) and
@@ -924,17 +988,19 @@ function statsMeterWnd:OnUpdate(dt)
   lastMeterUpdate = lastMeterUpdate + dt
   if lastMeterUpdate > 1000 then
 
-    -- -- TODO: CURRENT HACK TO MAKE TRACKING PAUSE UNTIL A NUMBER SHOWS UP
-    -- if (stats["total_dmg"]["_OVERALL"] == nil and stats["dps"]["_OVERALL"] == nil) and
-    --   (stats["total_healing"]["_OVERALL"] == nil and stats["hps"]["_OVERALL"] == nil) and
-    --   (stats["dmg_taken"]["_OVERALL"] == nil and stats["dmg_absorbed_raw"]["_OVERALL"] == nil) then 
-    --   reinitializeMeter()
-    -- end 
+ 
     lastMeterUpdate = dt
     removeNilEntriesFromStats(stats)
     updateDpsHpsNumbers()
     updateAbsorbedDmgNumbers()
     Update()
+  end
+  
+  -- Every 30 seconds, clean up old data to prevent memory leaks
+  lastCleanupUpdate = lastCleanupUpdate + dt
+  if lastCleanupUpdate > 30000 then
+    cleanupOldData()
+    lastCleanupUpdate = dt
   end
 end
 statsMeterWnd:SetHandler("OnUpdate", statsMeterWnd.OnUpdate)
@@ -976,56 +1042,6 @@ end)
 function statsMeterWnd.moveWnd.filterButton:SelectedProc()
   selectedPage = statsMeterWnd.moveWnd.filterButton:GetSelectedIndex()
 
-  -- for i = 1, 5000 do
-  --   indexStr = tostring(i)
-  --   randomNum = math.random(5000000, 100000000)
-  --   name = "PogMan" .. indexStr
-
-  --   unitNames[indexStr] = name
-  --   unitFactions[indexStr] = "friendly"
-  --   unitTypes[indexStr] = "character"
-  --   stats['total_dmg'][indexStr] = randomNum
-  --   if stats['total_dmg']['_OVERALL'] ~= nil then 
-  --     stats['total_dmg']['_OVERALL'] = stats['total_dmg']['_OVERALL'] + randomNum
-  --   else
-  --     stats['total_dmg']['_OVERALL'] = randomNum
-  --   end 
-  --   stats['total_healing'][indexStr] = randomNum
-  --   if stats['total_healing']['_OVERALL'] ~= nil then 
-  --     stats['total_healing']['_OVERALL'] = stats['total_healing']['_OVERALL'] + randomNum
-  --   else
-  --     stats['total_healing']['_OVERALL'] = randomNum
-  --   end 
-  --   stats['dmg_taken'][indexStr] = randomNum
-  --   if stats['dmg_taken']['_OVERALL'] ~= nil then 
-  --     stats['dmg_taken']['_OVERALL'] = stats['dmg_taken']['_OVERALL'] + randomNum
-  --   else
-  --     stats['dmg_taken']['_OVERALL'] = randomNum
-  --   end
-  --   stats['dmg_absorbed_raw'][indexStr] = randomNum
-  --   if stats['dmg_absorbed_raw']['_OVERALL'] ~= nil then 
-  --     stats['dmg_absorbed_raw']['_OVERALL'] = stats['dmg_absorbed_raw']['_OVERALL'] + randomNum
-  --   else
-  --     stats['dmg_absorbed_raw']['_OVERALL'] = randomNum
-  --   end 
-    
-  --   api.Log:Info(tostring(randomNum))
-  -- end 
-
-  -- clear the meter to start fresh, and then update it
-  -- for i = 1, #statsMeterWnd.child do
-  --   -- Reset every child that doesn't have unit information written into it
-  --   -- Delete skillsetIcon if it exists
-  --   if statsMeterWnd.child[i].skillsetIcon ~= nil then
-  --     statsMeterWnd.child[i].skillsetIcon:Show(false)
-  --     statsMeterWnd.child[i].skillsetIcon = nil
-  --   end 
-  --   statsMeterWnd.child[i].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
-  --   statsMeterWnd.child[i].bgStatusBar.statLabel:SetText("")
-  --   statsMeterWnd.child[i].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
-  --   statsMeterWnd.child[i].bgStatusBar.statAmtLabel:SetText("")
-  --   statsMeterWnd.child[i].bgStatusBar:SetValue(0)
-  -- end
   Update()
 end
 -- Unit Type Filter Dropdown
@@ -1044,16 +1060,24 @@ function statsMeterWnd.moveWnd.unitFiltersButton:SelectedProc()
   -- clear the meter to start fresh, and then update it
   for i = 1, #statsMeterWnd.child do
     -- Reset every child that doesn't have unit information written into it
-    -- Delete skillsetIcon if it exists
-    if statsMeterWnd.child[i].skillsetIcon ~= nil then
-      statsMeterWnd.child[i].skillsetIcon:Show(false)
-      -- statsMeterWnd.child[i].skillsetIcon = nil
-    end 
-    statsMeterWnd.child[i].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
-    statsMeterWnd.child[i].bgStatusBar.statLabel:SetText("")
-    statsMeterWnd.child[i].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
-    statsMeterWnd.child[i].bgStatusBar.statAmtLabel:SetText("")
-    statsMeterWnd.child[i].bgStatusBar:SetValue(0)
+    if statsMeterWnd.child[i] then
+      -- Delete skillsetIcon if it exists
+      if statsMeterWnd.child[i].skillsetIcon ~= nil then
+        statsMeterWnd.child[i].skillsetIcon:Show(false)
+        statsMeterWnd.child[i].skillsetIcon = nil
+      end 
+      if statsMeterWnd.child[i].bgStatusBar then
+        if statsMeterWnd.child[i].bgStatusBar.statLabel then
+          statsMeterWnd.child[i].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
+          statsMeterWnd.child[i].bgStatusBar.statLabel:SetText("")
+        end
+        if statsMeterWnd.child[i].bgStatusBar.statAmtLabel then
+          statsMeterWnd.child[i].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
+          statsMeterWnd.child[i].bgStatusBar.statAmtLabel:SetText("")
+        end
+        statsMeterWnd.child[i].bgStatusBar:SetValue(0)
+      end
+    end
   end
   statsMeterWnd.moveWnd.unitFiltersButton:Select(0)
   self:SetText("Filters")
@@ -1113,22 +1137,60 @@ local function OnLoad()
 end
 
 local function OnUnload()
-  local settings = api.GetSettings("stats_meter")
-  local x, y = statsMeterWnd:GetOffset()
-  settings.posX = x
-  settings.posY = y
-  settings.mainFilter = selectedPage
-  settings.playerFilter = unitFilters["Players"]
-  settings.hostileFilter = unitFilters["Hostiles"]
-  settings.npcFilter = unitFilters["NPCs"]
-  api.SaveSettings()
-  statsMeterWnd:ReleaseHandler("OnEvent")
-  statsMeterWnd:ReleaseHandler("OnUpdate")
-  statsMeterWnd:Show(false)
-  statsMeterWnd = nil
-  minimizedWnd:Show(false)
-  minimizedWnd = nil
+  -- Save settings before cleanup
+  if statsMeterWnd then
+    local settings = api.GetSettings("stats_meter")
+    local x, y = statsMeterWnd:GetOffset()
+    settings.posX = x
+    settings.posY = y
+    settings.mainFilter = selectedPage
+    settings.playerFilter = unitFilters["Players"]
+    settings.hostileFilter = unitFilters["Hostiles"]
+    settings.npcFilter = unitFilters["NPCs"]
+    api.SaveSettings()
+  end
   
+  -- Clean up event handlers
+  if statsMeterWnd then
+    statsMeterWnd:ReleaseHandler("OnEvent")
+    statsMeterWnd:ReleaseHandler("OnUpdate")
+    statsMeterWnd:UnregisterEvent("COMBAT_TEXT")
+    statsMeterWnd:UnregisterEvent("COMBAT_MSG")
+    statsMeterWnd:UnregisterEvent("CHAT_JOINED_CHANNEL")
+    statsMeterWnd:UnregisterEvent("CHAT_LEAVED_CHANNEL")
+  end
+  
+  -- Clean up UI elements and their resources
+  if statsMeterWnd and statsMeterWnd.child then
+    for i = 1, #statsMeterWnd.child do
+      if statsMeterWnd.child[i] and statsMeterWnd.child[i].skillsetIcon then
+        statsMeterWnd.child[i].skillsetIcon:Show(false)
+        statsMeterWnd.child[i].skillsetIcon = nil
+      end
+      statsMeterWnd.child[i] = nil
+    end
+  end
+  
+  -- Clean up windows
+  if statsMeterWnd then
+    statsMeterWnd:Show(false)
+    statsMeterWnd = nil
+  end
+  if minimizedWnd then
+    minimizedWnd:Show(false)
+    minimizedWnd = nil
+  end
+  if resetPromptWnd then
+    resetPromptWnd:Show(false)
+    resetPromptWnd = nil
+  end
+  
+  -- Clear data tables to free memory
+  stats = nil
+  unitNames = nil
+  unitTypes = nil
+  unitFactions = nil
+  unitFilters = nil
 end
 
 return { name = "Stats Meter", author = "Michaelqt", version = "1.0.3", desc = "A stats meter covering damage, heals and more!", OnUnload = OnUnload, OnLoad = OnLoad }
