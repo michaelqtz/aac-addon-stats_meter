@@ -1,116 +1,66 @@
 -- Addon API and settings
 local api = require("api")
-local settings = api.GetSettings("stats_meter")
 
--- TODO: Useful for debugging bullshit ---> dump fields on 
--- for key,value in pairs(api.Team) do
---   api.Log:Info("found member " .. key);
--- end
+local stats_meter_addon = {
+	name = "Stats Meter",
+	author = "Michaelqt",
+	version = "2.0.0",
+	desc = "A stats meter covering damage, heals and more!"
+}
+local statsMeterWnd = nil
+local minimizedWnd = nil
+local resetPromptWnd = nil
 
-local statsMeterWnd = api.Interface:CreateEmptyWindow("statsMeterWnd", "UIParent")
-statsMeterWnd:SetExtent(280, 280)
---statsMeterWnd:SetTitle("dps meter")
---statsMeterWnd:SetCloseOnEscape(false)
---statsMeterWnd.titleBar.closeButton:Show(false)
-statsMeterWnd.child = {}
-local offsetX = 30
-local offsetY = 70
-local labelHeight = 20
-for k = 1, 10 do
-  -- Overall child widget and ranking # text
-  local id = tostring(k) .. ""
-  statsMeterWnd.child[k] = api.Interface:CreateWidget("label", id, statsMeterWnd)
-  local child = statsMeterWnd.child[k]
-  child:AddAnchor("TOPLEFT", 12, offsetY)
-  child:SetExtent(255, labelHeight)
-  child:SetText(id)
-  child.style:SetColor(1, 1, 1, 1)
-  child.style:SetAlign(ALIGN.LEFT)
+local oldSettings = nil
 
-  -- Status bar and background
-  local statusBar = api.Interface:CreateStatusBar("bgStatusBar", child, "item_evolving_material")
-  child.bgStatusBar = statusBar
+local stats = nil
 
-  -- Correcting the coords to show only top layer (texture width divided by 2)  
-  local coords = {
-    GetTextureInfo(TEXTURE_PATH.COSPLAY_ENCHANT, "grade_01"):GetCoords()
-  }
-  child.bgStatusBar.statusBar:SetBarTextureCoords(coords[1], coords[2], coords[3] / 2, coords[4])  
-  
-  child.bgStatusBar:AddAnchor("TOPLEFT", child, 25, 1)
-  child.bgStatusBar:AddAnchor("BOTTOMRIGHT", child, -1, -1)
-  child.bgStatusBar:SetMinMaxValues(0, 100)
-  child.bgStatusBar:SetBarColor({
-    ConvertColor(222),
-    ConvertColor(177),
-    ConvertColor(102),
-    1
-  })
-  child.bgStatusBar.bg:SetColor(ConvertColor(76), ConvertColor(45), ConvertColor(8), 0.4)
-  
-  -- Display text for name and # + % of selected stat 
-  local statLabel = child.bgStatusBar:CreateChildWidget("label", "statLabel", 0, true)
-  statLabel.style:SetShadow(true)
-  statLabel.style:SetAlign(ALIGN.LEFT)
-  ApplyTextColor(statLabel, FONT_COLOR.WHITE)
-  statLabel:AddAnchor("LEFT", 5, 0)
-  local statAmtLabel = child.bgStatusBar:CreateChildWidget("label", "statAmtLabel", 0, true)
-  statAmtLabel.style:SetShadow(true)
-  statAmtLabel.style:SetAlign(ALIGN.RIGHT)
-  ApplyTextColor(statAmtLabel, FONT_COLOR.WHITE)
-  statAmtLabel:AddAnchor("RIGHT", -5, 0)
-  
-  offsetY = offsetY + labelHeight
-end
+local lastUpdate = 0
+local lastMeterUpdate = 0
+local lastPauseUpdate = 0
+local firstLoad = true
 
+-- Changed by onclick on dropdown
+local selectedPage = 1
 
--- Timer clock icon and label
-local timerLabel = statsMeterWnd:CreateChildWidget("label", "timerLabel", 0, true)
-timerLabel.style:SetShadow(true)
-timerLabel.style:SetAlign(ALIGN.RIGHT)
-timerLabel:AddAnchor("TOPRIGHT", statsMeterWnd, "TOPRIGHT", -20, 55)
-timerLabel.style:SetFontSize(FONT_SIZE.LARGE)
-local clockIcon = timerLabel:CreateChildWidget("label", "clockIcon", 0, true)  
-clockIcon:AddAnchor("TOPLEFT", timerLabel, "TOPLEFT", -67, -14)
-local clockIconTexture = clockIcon:CreateImageDrawable(TEXTURE_PATH.HUD, "background")
-clockIconTexture:SetTextureInfo("clock")
-clockIconTexture:AddAnchor("TOPLEFT", clockIcon, 0, 0)
+-- Names, types and factions
+local unitNames = {}
+local unitTypes = {}
+local unitFactions = {}
 
---- Add dragable bar across top
-local moveWnd = statsMeterWnd:CreateChildWidget("label", "moveWnd", 0, true)
-moveWnd:AddAnchor("TOPLEFT", statsMeterWnd, 12, 0)
-moveWnd:AddAnchor("TOPRIGHT", statsMeterWnd, 0, 0)
-moveWnd:SetHeight(80)
-moveWnd.style:SetFontSize(FONT_SIZE.XLARGE)
-moveWnd.style:SetAlign(ALIGN.LEFT)
-moveWnd:SetText("")
-ApplyTextColor(moveWnd, FONT_COLOR.WHITE)
--- Drag handlers for dragable bar
-function moveWnd:OnDragStart()
-  if api.Input:IsShiftKeyDown() then
-    statsMeterWnd:StartMoving()
-    api.Cursor:ClearCursor()
-    api.Cursor:SetCursorImage(CURSOR_PATH.MOVE, 0, 0)
-  end
-end
-moveWnd:SetHandler("OnDragStart", moveWnd.OnDragStart)
-function moveWnd:OnDragStop()
-  statsMeterWnd:StopMovingOrSizing()
-  api.Cursor:ClearCursor()
-end
-moveWnd:SetHandler("OnDragStop", moveWnd.OnDragStop)
-moveWnd:EnableDrag(true)
+-- Last known channels
+local lastKnownChannel = nil
+local currentChannel = nil
+-- Relative timer for DPS/HPS meters
+local startingTimer = nil
 
--- Refresh button for timer
-local refreshButton = statsMeterWnd:CreateChildWidget("button", "refreshButton", 0, true)
-refreshButton:SetExtent(55, 26)
-refreshButton:AddAnchor("RIGHT", timerLabel, "RIGHT", -75, 0)
-refreshButton:Show(true)
-api.Interface:ApplyButtonSkin(refreshButton, BUTTON_BASIC.RESET)
+-- Dungeon channel names 
+local dungeonChannelNames = {
+  -- Basic/Greater Dungeons
+  "Burnt Castle Armory", "Greater Burnt Castle Armory",
+  "Hadir Farm", "Greater Hadir Farm",
+  "Palace Cellar", "Greater Palace Cellar",
+  "Sharpwind Mines", "Greater Sharpwind Mines",
+  "Howling Abyss", "Greater Howling Abyss",
+  "Kroloal Cradle", "Greater Kroloal Cradle",
+  -- "Hard" dungeons
+  "Mistsong Summit",
+  "Serpentis",
+  -- Library Floors
+  "Encyclopedia Room", --> Floor 1
+  "Libris Garden", --> Floor 2
+  "Screaming Archives", --> Floor 3
+  -- Library Dungeons
+  "Corner Reading Room", --> CRR, every floor
+  "Screening Hall", --> Floor 1, Wynn
+  "Frozen Study", --> Floor 2, Halnaak
+  "Deranged Bookroom", --> Floor 3, Alexander
+  "Heart of Ayanad" --> Ayanad Scroll Distribution Center
+  -- Test value, which is mirage
+  -- "Mirage Isle"
+}
 
-
-
--- Add stats category selection
+-- Filter Display Strings
 local filtersDisplay = {
   "Total Damage",
   "Damage Per Second",
@@ -119,144 +69,19 @@ local filtersDisplay = {
   "Damage Taken",
   "Damage Absorbed"
 }
-
 local unitFiltersDisplay = {
   "Players",
   "Hostiles",
   "NPCs"
 }
 
-local unitFiltersDisplayColors = {
-  FONT_COLOR.RED,
-  FONT_COLOR.RED,
-  FONT_COLOR.RED
-}
+-- Path for log files being stored
+local logPath = "stats_meter/logs/stats_meter_log_template.txt"
 
--- Main Filter Dropdown Menu (Also used as title)
-local filterButton = api.Interface:CreateComboBox(moveWnd)
-filterButton:AddAnchor("TOPLEFT", moveWnd, 0, 3)
-filterButton:SetExtent(200, 30)
-filterButton.dropdownItem = filtersDisplay
-filterButton:Select(1)
-filterButton.style:SetFontSize(FONT_SIZE.XLARGE)
-ApplyTextColor(filterButton, FONT_COLOR.WHITE)
-filterButton.bg:SetColor(0,0,0,0)
-filterButton:SetHighlightTextColor(1, 1, 1, 1)
-filterButton:SetPushedTextColor(1, 1, 1, 1)
-filterButton:SetDisabledTextColor(1, 1, 1, 1)
-filterButton:SetTextColor(1, 1, 1, 1)
-moveWnd.filterButton = filterButton
-
--- Unit Filters Dropdown Menu
-local unitFiltersButton = api.Interface:CreateComboBox(moveWnd)
-unitFiltersButton:AddAnchor("RIGHT", timerLabel, -105, 0)
-unitFiltersButton:SetExtent(130, 30)
-unitFiltersButton.dropdownItem = unitFiltersDisplay
-unitFiltersButton.dropdownItemColor = unitFiltersDisplayColors
-unitFiltersButton:SetText("Filters")
-unitFiltersButton:Select(0)
-unitFiltersButton.style:SetFontSize(FONT_SIZE.LARGE)
-ApplyTextColor(unitFiltersButton, FONT_COLOR.WHITE)
-unitFiltersButton.bg:SetColor(0,0,0,0)
-unitFiltersButton:SetHighlightTextColor(1, 1, 1, 1)
-unitFiltersButton:SetPushedTextColor(1, 1, 1, 1)
-unitFiltersButton:SetDisabledTextColor(1, 1, 1, 1)
-unitFiltersButton:SetTextColor(1, 1, 1, 1)
-moveWnd.unitFiltersButton = unitFiltersButton
-
--- Minimize button
-local minimizeButton = statsMeterWnd:CreateChildWidget("button", "minimizeButton", 0, true)
-minimizeButton:SetExtent(26, 28)
-minimizeButton:AddAnchor("TOPRIGHT", statsMeterWnd, -12, 5)
-local minimizeButtonTexture = minimizeButton:CreateImageDrawable(TEXTURE_PATH.HUD, "background")
-minimizeButtonTexture:SetTexture(TEXTURE_PATH.HUD)
-minimizeButtonTexture:SetCoords(754, 121, 26, 28)
-minimizeButtonTexture:AddAnchor("TOPLEFT", minimizeButton, 0, 0)
-minimizeButtonTexture:SetExtent(26, 28)
-
---- Minimized view & maximize button
-local minimizedWnd = api.Interface:CreateEmptyWindow("minimizedWnd", "UIParent")
-minimizedWnd:SetExtent(280, 40)
-minimizedWnd:AddAnchor("TOPRIGHT", statsMeterWnd, 0, 0)
-local minimizedLabel = minimizedWnd:CreateChildWidget("label", "minimizedLabel", 0, true)
-minimizedLabel:SetText("Stats Meter (Hidden)")
-minimizedLabel.style:SetFontSize(FONT_SIZE.XLARGE)
-minimizedLabel.style:SetAlign(ALIGN.RIGHT)
-minimizedLabel:AddAnchor("TOPRIGHT", minimizedWnd, -100, FONT_SIZE.XLARGE)
--- Dragable bar for minimized window too
-local minimizedMoveWnd = minimizedWnd:CreateChildWidget("label", "minimizedMoveWnd", 0, true)
-minimizedMoveWnd:AddAnchor("TOPLEFT", minimizedWnd, 12, 0)
-minimizedMoveWnd:AddAnchor("TOPRIGHT", minimizedWnd, 0, 0)
-minimizedMoveWnd:SetHeight(40)
--- Drag handlers for dragable bar
-function minimizedMoveWnd:OnDragStart(arg)
-  if arg == "LeftButton" and api.Input:IsShiftKeyDown() then
-    minimizedWnd:StartMoving()
-    api.Cursor:ClearCursor()
-    api.Cursor:SetCursorImage(CURSOR_PATH.MOVE, 0, 0)
-  end
-end
-minimizedMoveWnd:SetHandler("OnDragStart", minimizedMoveWnd.OnDragStart)
-function minimizedMoveWnd:OnDragStop()
-  minimizedWnd:StopMovingOrSizing()
-  api.Cursor:ClearCursor()
-end
-minimizedMoveWnd:SetHandler("OnDragStop", minimizedMoveWnd.OnDragStop)
-minimizedMoveWnd:EnableDrag(true)
--- Toggle back to maximized view with this button
-local maximizeButton = minimizedWnd:CreateChildWidget("button", "maximizeButton", 0, true)
-maximizeButton:SetExtent(26, 28)
-maximizeButton:AddAnchor("TOPRIGHT", minimizedWnd, -12, 5)
-local maximizeButtonTexture = maximizeButton:CreateImageDrawable(TEXTURE_PATH.HUD, "background")
-maximizeButtonTexture:SetTexture(TEXTURE_PATH.HUD)
-maximizeButtonTexture:SetCoords(754, 94, 26, 28)
-maximizeButtonTexture:AddAnchor("TOPLEFT", maximizeButton, 0, 0)
-maximizeButtonTexture:SetExtent(26, 28)
--- Minimized Window Background Styling
-minimizedWnd.bg = minimizedWnd:CreateNinePartDrawable(TEXTURE_PATH.HUD, "background")
-minimizedWnd.bg:SetTextureInfo("bg_quest")
-minimizedWnd.bg:SetColor(0, 0, 0, 0.5)
-minimizedWnd.bg:AddAnchor("TOPLEFT", minimizedWnd, 0, 0)
-minimizedWnd.bg:AddAnchor("BOTTOMRIGHT", minimizedWnd, 0, 0)
-
-minimizedWnd:Show(false) --> default to being hidden
-
--- Main Window Background Styling
-statsMeterWnd.bg = statsMeterWnd:CreateNinePartDrawable(TEXTURE_PATH.HUD, "background")
-statsMeterWnd.bg:SetTextureInfo("bg_quest")
-statsMeterWnd.bg:SetColor(0, 0, 0, 0.5)
-statsMeterWnd.bg:AddAnchor("TOPLEFT", statsMeterWnd, 0, 0)
-statsMeterWnd.bg:AddAnchor("BOTTOMRIGHT", statsMeterWnd, 0, 0)
-
-
-
--- Show the damn thing.
-statsMeterWnd:Show(true)
-
---- Meter Reset Prompt window
--- Actual window
-local resetPromptWnd = api.Interface:CreateWindow("resetPromptWnd", "Dungeon Entry Detected", 0, 0)
-resetPromptWnd:AddAnchor("CENTER", "UIParent", 0, 0)
-resetPromptWnd:SetExtent(300, 150)
--- Prompt label and buttons
-resetPromptText = "You are entering a new dungeon. \n \n  Would you like to reset your meter?"
-resetPromptLabel = resetPromptWnd:CreateChildWidget("textbox", "resetPromptLabel", 0, true)
-resetPromptLabel:SetText(resetPromptText)
-resetPromptLabel:SetExtent(240, FONT_SIZE.LARGE * 2.5)
-resetPromptLabel.style:SetAlign(ALIGN.CENTER)
-ApplyTextColor(resetPromptLabel, FONT_COLOR.DEFAULT)
-resetPromptLabel:AddAnchor("CENTER", resetPromptWnd, 0, 0)
-resetPromptYesBtn = resetPromptWnd:CreateChildWidget("button", "resetPromptYesBtn", 0, true)
-api.Interface:ApplyButtonSkin(resetPromptYesBtn, BUTTON_BASIC.DEFAULT)
-resetPromptYesBtn:AddAnchor("BOTTOMLEFT", resetPromptWnd, 10, -10)
-resetPromptYesBtn:SetText("Yes")
-resetPromptNoBtn = resetPromptWnd:CreateChildWidget("button", "resetPromptNoBtn", 0, true)
-api.Interface:ApplyButtonSkin(resetPromptNoBtn, BUTTON_BASIC.DEFAULT)
-resetPromptNoBtn:AddAnchor("BOTTOMRIGHT", resetPromptWnd, -10, -10)
-resetPromptNoBtn:SetText("No")
--- Starts off hidden (Hide the damn thing)
-resetPromptWnd:Show(false)
-
+-- TODO: Useful for debugging bullshit ---> dump fields on 
+-- for key,value in pairs(api.Team) do
+--   api.Log:Info("found member " .. key);
+-- end
 
 local pages = {
   {
@@ -297,59 +122,7 @@ local unitFiltersToTypes = {
   npc = "NPCs"
 }
 
--- Where statistics are set
-local stats = {}
-stats["total_dmg"] = {}
-stats["dps"] = {}
-stats["total_healing"] = {}
-stats["hps"] = {}
-stats['dmg_taken'] = {}
-stats['dmg_absorbed_raw'] = {}
-stats['dmg_absorbed'] = {}
-
--- Changed by onclick on dropdown
-local selectedPage = 1
-
-local unitNames = {}
-local unitTypes = {}
-local unitFactions = {}
-
--- Last known channels
-local lastKnownChannel = nil
-local currentChannel = nil
-
--- Dungeon channel names 
-local dungeonChannelNames = {
-  -- Basic/Greater Dungeons
-  "Burnt Castle Armory", "Greater Burnt Castle Armory",
-  "Hadir Farm", "Greater Hadir Farm",
-  "Palace Cellar", "Greater Palace Cellar",
-  "Sharpwind Mines", "Greater Sharpwind Mines",
-  "Howling Abyss", "Greater Howling Abyss",
-  "Kroloal Cradle", "Greater Kroloal Cradle",
-  -- "Hard" dungeons
-  "Mistsong Summit",
-  "Serpentis",
-  -- Library Floors
-  "Encyclopedia Room", --> Floor 1
-  "Libris Garden", --> Floor 2
-  "Screaming Archives", --> Floor 3
-  -- Library Dungeons
-  "Corner Reading Room", --> CRR, every floor
-  "Screening Hall", --> Floor 1, Wynn
-  "Frozen Study", --> Floor 2, Halnaak
-  "Deranged Bookroom", --> Floor 3, Alexander
-  "Heart of Ayanad" --> Ayanad Scroll Distribution Center
-  -- Test value, which is mirage
-  -- "Mirage Isle"
-}
-
--- Relative timer for DPS/HPS meters
-local startingTimer = api.Time:GetUiMsec()
-
--- Path for log files being stored
-local logPath = "stats_meter/logs/stats_meter_log_template.txt"
-
+-- Utility Functions
 -- Sorting function for associative arrays
 local function getKeysSortedByValue(tbl, sortFunction)
   local keys = {}
@@ -382,7 +155,7 @@ local function tableContainsPairs(tbl, checkFor)
   return false
 end
 
-function tableCopy(t)
+local function tableCopy(t)
   local t2 = {}
   for k,v in pairs(t) do
     t2[k] = v
@@ -397,6 +170,14 @@ local function removeNilEntries(tbl)
       tbl[keysToRemove] = nil
     end 
   end    
+end
+
+local function displayTimeString(timeInMs)
+  local seconds = math.floor(timeInMs / 1000) % 60
+  local minutes = math.floor(timeInMs / (1000*60)) % 60  
+  local hours = math.floor(timeInMs / (1000*60*60)) % 24
+  
+  return string.format("%02d:%02d", minutes, seconds)
 end
 
 local function removeNilEntriesFromStats(stats)
@@ -435,31 +216,22 @@ local function reinitializeMeter()
   startingTimer = api.Time:GetUiMsec()
 end 
 
-local function promptForReset()
-  resetPromptWnd:Show(true)
+local function updateDpsHpsNumbers()
+  local secondsSinceStarted = api.Time:GetUiMsec() - startingTimer
+  for key, value in pairs(stats["total_dmg"]) do
+    stats["dps"][key] = math.floor(value / secondsSinceStarted * 1000)
+  end
+  for key, value in pairs(stats["total_healing"]) do
+    stats["hps"][key] = math.floor(value / secondsSinceStarted * 1000)
+  end
 end
 
-local function updateLastKnownChannels(channelId, channelName)
-  -- Skip anything that isn't shout chat
-  local targetChannelId = 1 --> we'll use shout chat channels for zone name
-  if channelId ~= 1 then 
-    return 
-  end 
-  -- Move the currently stored channel name to last known channel
-  if currentChannel ~= nil then 
-    lastKnownChannel = currentChannel
-  end 
-  
-  -- now we replace current
-  currentChannel = channelName
-
-  if lastKnownChannel ~= currentChannel then 
-    -- If the channel name is a dungeon and we weren't in that dungeon as the last channel, we reset 
-    if tableContains(dungeonChannelNames, currentChannel) == true then
-      promptForReset()
-    end
-  end 
-end
+local function updateAbsorbedDmgNumbers()
+  for key, value in pairs(stats["dmg_absorbed_raw"]) do
+    local totalDmgTaken = stats["dmg_taken"][key] + stats["dmg_absorbed_raw"][key]
+    stats["dmg_absorbed"][key] = tostring(math.floor((stats["dmg_absorbed_raw"][key] / totalDmgTaken) * 1000) / 10)
+  end
+end 
 
 local function getMainSkillsetName(unitClassTable)
   local classMappings = {
@@ -527,123 +299,6 @@ local function getSkillsetIcon(skillsetId, widget)
 
   return icon
 end
-
--- Crude total dmg calc
-local function addDmgNumber(sourceUnitId, targetUnitId, amount, skillType, hitOrMissType, weaponDamage, isSynergy, distance)
-  local sourceUnitIdStr = tostring(sourceUnitId)
-  
-  local unitName = api.Unit:GetUnitNameById(sourceUnitId)
-  local unitInfo = nil 
-  local unitType = nil
-  if unitTypes[sourceUnitIdStr] == nil then 
-    unitInfo = api.Unit:GetUnitInfoById(sourceUnitId)
-    if unitInfo ~= nil and unitInfo.type ~= nil then 
-      unitType = unitInfo.type
-      unitTypes[sourceUnitIdStr] = unitType
-    end 
-  else
-    unitType = unitTypes[sourceUnitIdStr]
-  end 
-
-  
-  local targetName = api.Unit:GetUnitNameById(targetUnitId)
-
-  if unitType ~= "npc" or (unitType == "npc" and unitFilters["NPCs"] == 1) then 
-    -- Add to individual player totals
-    if skillType == "SKILL" or skillType == "SWING" or skillType == "DOT" then 
-      if stats["total_dmg"][sourceUnitIdStr] == nil then
-        stats["total_dmg"][sourceUnitIdStr] = tonumber(amount) * -1
-      else  
-        stats["total_dmg"][sourceUnitIdStr] = stats["total_dmg"][sourceUnitIdStr] + (tonumber(amount) * -1)
-      end
-      -- Add to overall (all player) totals
-      if stats["total_dmg"]["_OVERALL"] == nil then
-        stats["total_dmg"]["_OVERALL"] = tonumber(amount) * -1
-      else
-        stats["total_dmg"]["_OVERALL"] = stats["total_dmg"]["_OVERALL"] + (tonumber(amount) * -1)
-      end
-    end
-    if skillType == "HEAL" then
-      if stats["total_healing"][sourceUnitIdStr] == nil then
-        stats["total_healing"][sourceUnitIdStr] = tonumber(amount)
-      else  
-        stats["total_healing"][sourceUnitIdStr] = stats["total_healing"][sourceUnitIdStr] + (tonumber(amount))
-      end
-      -- Add to overall (all player) totals
-      if stats["total_healing"]["_OVERALL"] == nil then
-        stats["total_healing"]["_OVERALL"] = tonumber(amount)
-      else
-        stats["total_healing"]["_OVERALL"] = stats["total_healing"]["_OVERALL"] + (tonumber(amount))
-      end
-    end
-  end
-end
-
--- TODO: Crude Logging of combat messages. switch all non-personal logic over to this.
-local function processCombatMessage(targetUnitId, combatEvent, source, target, ...)
-  local targetUnitIdStr = tostring(targetUnitId)
-  local unitInfo = nil 
-  local unitType = nil
-  if unitTypes[targetUnitIdStr] == nil then 
-    unitInfo = api.Unit:GetUnitInfoById(targetUnitId)
-    if unitInfo ~= nil and unitInfo.type ~= nil then 
-      if unitInfo.type ~= nil then 
-        unitType = unitInfo.type
-        unitTypes[targetUnitIdStr] = unitType
-      end
-    end 
-  else
-    unitType = unitTypes[targetUnitIdStr]
-  end 
-  
-  if unitType ~= "npc" or (unitType == "npc" and unitFilters["NPCs"] == 1) then 
-    if combatEvent == "SPELL_DAMAGE" or combatEvent == "SPELL_DOT_DAMAGE" or combatEvent == "MELEE_DAMAGE" then --> also needs "MELEE_DAMAGE"
-      
-      local result = ParseCombatMessage(combatEvent, unpack(arg))
-      -- Record damage taken
-      if stats["dmg_taken"][targetUnitIdStr] == nil then 
-        stats["dmg_taken"][targetUnitIdStr] = tonumber(result.damage) * -1
-      else
-        stats["dmg_taken"][targetUnitIdStr] = stats["dmg_taken"][targetUnitIdStr] + (tonumber(result.damage) * -1)
-      end 
-      -- Add to overall damage taken totals
-      if stats["dmg_taken"]["_OVERALL"] == nil then 
-        stats["dmg_taken"]["_OVERALL"] = tonumber(result.damage) * -1
-      else
-        stats["dmg_taken"]["_OVERALL"] = stats["dmg_taken"]["_OVERALL"] + (tonumber(result.damage) * -1)
-      end 
-      -- Record damage abosrbed
-      if stats["dmg_absorbed_raw"][targetUnitIdStr] == nil then 
-        stats["dmg_absorbed_raw"][targetUnitIdStr] = tonumber(result.reduced) * 1
-      else
-        stats["dmg_absorbed_raw"][targetUnitIdStr] = stats["dmg_absorbed_raw"][targetUnitIdStr] + (tonumber(result.reduced) * 1)
-      end 
-      -- Add to overall damage absorbed totals
-      if stats["dmg_absorbed_raw"]["_OVERALL"] == nil then 
-        stats["dmg_absorbed_raw"]["_OVERALL"] = tonumber(result.reduced) * 1
-      else
-        stats["dmg_absorbed_raw"]["_OVERALL"] = stats["dmg_absorbed_raw"]["_OVERALL"] + (tonumber(result.reduced) * 1)
-      end 
-    end 
-  end
-end 
-
-local function updateDpsHpsNumbers()
-  local secondsSinceStarted = api.Time:GetUiMsec() - startingTimer
-  for key, value in pairs(stats["total_dmg"]) do
-    stats["dps"][key] = math.floor(value / secondsSinceStarted * 1000)
-  end
-  for key, value in pairs(stats["total_healing"]) do
-    stats["hps"][key] = math.floor(value / secondsSinceStarted * 1000)
-  end
-end
-
-local function updateAbsorbedDmgNumbers()
-  for key, value in pairs(stats["dmg_absorbed_raw"]) do
-    local totalDmgTaken = stats["dmg_taken"][key] + stats["dmg_absorbed_raw"][key]
-    stats["dmg_absorbed"][key] = tostring(math.floor((stats["dmg_absorbed_raw"][key] / totalDmgTaken) * 1000) / 10)
-  end
-end 
 
 -- Main Drawing Update Function
 local function Update()
@@ -855,46 +510,75 @@ local function Update()
   statsMeterWnd:Show(true)
 end
 
-function statsMeterWnd:OnEvent(event, ...)
-  if event == "COMBAT_TEXT" then
-    addDmgNumber(unpack(arg))
-    -- updateDpsHpsNumbers()
-  end
-  if event == "COMBAT_MSG" then
-    processCombatMessage(unpack(arg))
-    -- updateAbsorbedDmgNumbers()
-  end
-  if event == "CHAT_JOINED_CHANNEL" then 
-    updateLastKnownChannels(unpack(arg))
+local function promptForReset()
+  resetPromptWnd:Show(true)
+end
+
+local function updateLastKnownChannels(channelId, channelName)
+  -- Skip anything that isn't shout chat
+  local targetChannelId = 1 --> we'll use shout chat channels for zone name
+  if channelId ~= 1 then 
+    return 
   end 
-  if event == "CHAT_LEAVED_CHANNEL" then
-    return nil --> pass
-  end
-end
-statsMeterWnd:SetHandler("OnEvent", statsMeterWnd.OnEvent)
-statsMeterWnd:RegisterEvent("COMBAT_TEXT")
-statsMeterWnd:RegisterEvent("COMBAT_MSG")
-statsMeterWnd:RegisterEvent("CHAT_JOINED_CHANNEL")
-statsMeterWnd:RegisterEvent("CHAT_LEAVED_CHANNEL")
-
-local function displayTimeString(timeInMs)
-  local seconds = math.floor(timeInMs / 1000) % 60
-  local minutes = math.floor(timeInMs / (1000*60)) % 60  
-  local hours = math.floor(timeInMs / (1000*60*60)) % 24
+  -- Move the currently stored channel name to last known channel
+  if currentChannel ~= nil then 
+    lastKnownChannel = currentChannel
+  end 
   
-  return string.format("%02d:%02d", minutes, seconds)
+  -- now we replace current
+  currentChannel = channelName
+
+  if lastKnownChannel ~= currentChannel then 
+    -- If the channel name is a dungeon and we weren't in that dungeon as the last channel, we reset 
+    if tableContains(dungeonChannelNames, currentChannel) == true then
+      promptForReset()
+    end
+  end 
 end
 
-local lastUpdate = 0
-local lastMeterUpdate = 0
-local lastPauseUpdate = 0
-local oldSettings = tableCopy(settings)
-function statsMeterWnd:OnUpdate(dt)
+-- Main Event Handlers
+local function OnUpdate(dt)
+  
   -- Update timer label
   statsMeterWnd.timerLabel:SetText(displayTimeString(api.Time:GetUiMsec() - startingTimer))
   -- Hack to color dropdowns as white
-  ApplyTextColor(moveWnd.filterButton, FONT_COLOR.WHITE)
-  ApplyTextColor(moveWnd.unitFiltersButton, FONT_COLOR.WHITE)
+  ApplyTextColor(statsMeterWnd.moveWnd.filterButton, FONT_COLOR.WHITE)
+  ApplyTextColor(statsMeterWnd.moveWnd.unitFiltersButton, FONT_COLOR.WHITE)
+
+  -- If this is the first frame drawn, move the meter to where the settings point.
+  if firstLoad then 
+    local settings = api.GetSettings("stats_meter")
+    statsMeterWnd:RemoveAllAnchors()
+    if settings.posX == 0 and settings.posY == 0 then
+      statsMeterWnd:AddAnchor("RIGHT", "UIParent", 0, 0)
+    else 
+      statsMeterWnd:AddAnchor("TOPLEFT", "UIParent", settings.posX, settings.posY)
+    end 
+  
+    if settings.playerFilter ~= nil then
+      unitFilters["Players"] = settings.playerFilter
+      if unitFilters["Players"] == 1 then
+        statsMeterWnd.moveWnd.unitFiltersButton.dropdownItemColor[1] = FONT_COLOR.GREEN
+      end 
+    end 
+    if settings.hostileFilter ~= nil then
+      unitFilters["Hostiles"] = settings.hostileFilter
+      if unitFilters["Hostiles"] == 1 then
+        statsMeterWnd.moveWnd.unitFiltersButton.dropdownItemColor[2] = FONT_COLOR.GREEN
+      end 
+    end 
+    if settings.npcFilter ~= nil then
+      unitFilters["NPCs"] = settings.npcFilter
+      if unitFilters["NPCs"] == 1 then
+        statsMeterWnd.moveWnd.unitFiltersButton.dropdownItemColor[3] = FONT_COLOR.GREEN
+      end 
+    end 
+    if settings.mainFilter ~= nil then 
+      selectedPage = settings.mainFilter
+      statsMeterWnd.moveWnd.filterButton:Select(selectedPage)
+    end 
+    firstLoad = false
+  end 
 
   -- TODO: Pause Timer Hack
   lastPauseUpdate = lastPauseUpdate + dt
@@ -937,131 +621,11 @@ function statsMeterWnd:OnUpdate(dt)
     Update()
   end
 end
-statsMeterWnd:SetHandler("OnUpdate", statsMeterWnd.OnUpdate)
 
--- Button Handlers
-statsMeterWnd.refreshButton:SetHandler("OnClick", function()
-  saveLogFile()
-  reinitializeMeter()
-  Update()
-end)
 
-resetPromptWnd.resetPromptYesBtn:SetHandler("OnClick", function()
-  saveLogFile()
-  reinitializeMeter()
-  resetPromptWnd:Show(false)
-end)
-
-resetPromptWnd.resetPromptNoBtn:SetHandler("OnClick", function()
-  resetPromptWnd:Show(false)
-end)
-
-statsMeterWnd.minimizeButton:SetHandler("OnClick", function()
-  local statsMeterX, statsMeterY = statsMeterWnd:GetOffset()
-  minimizedWnd:RemoveAllAnchors()
-  minimizedWnd:AddAnchor("TOPRIGHT", statsMeterWnd, 0, 0)
-  statsMeterWnd:Show(false)
-  minimizedWnd:Show(true)
-end)
-
-minimizedWnd.maximizeButton:SetHandler("OnClick", function()
-  statsMeterWnd:RemoveAllAnchors()
-  statsMeterWnd:AddAnchor("TOPLEFT", minimizedWnd, 0, 0)
-  minimizedWnd:Show(false)
-  statsMeterWnd:Show(true)
-end)
-
---- Dropdown Handlers
--- Main Filter Dropdown
-function statsMeterWnd.moveWnd.filterButton:SelectedProc()
-  selectedPage = statsMeterWnd.moveWnd.filterButton:GetSelectedIndex()
-
-  -- for i = 1, 5000 do
-  --   indexStr = tostring(i)
-  --   randomNum = math.random(5000000, 100000000)
-  --   name = "PogMan" .. indexStr
-
-  --   unitNames[indexStr] = name
-  --   unitFactions[indexStr] = "friendly"
-  --   unitTypes[indexStr] = "character"
-  --   stats['total_dmg'][indexStr] = randomNum
-  --   if stats['total_dmg']['_OVERALL'] ~= nil then 
-  --     stats['total_dmg']['_OVERALL'] = stats['total_dmg']['_OVERALL'] + randomNum
-  --   else
-  --     stats['total_dmg']['_OVERALL'] = randomNum
-  --   end 
-  --   stats['total_healing'][indexStr] = randomNum
-  --   if stats['total_healing']['_OVERALL'] ~= nil then 
-  --     stats['total_healing']['_OVERALL'] = stats['total_healing']['_OVERALL'] + randomNum
-  --   else
-  --     stats['total_healing']['_OVERALL'] = randomNum
-  --   end 
-  --   stats['dmg_taken'][indexStr] = randomNum
-  --   if stats['dmg_taken']['_OVERALL'] ~= nil then 
-  --     stats['dmg_taken']['_OVERALL'] = stats['dmg_taken']['_OVERALL'] + randomNum
-  --   else
-  --     stats['dmg_taken']['_OVERALL'] = randomNum
-  --   end
-  --   stats['dmg_absorbed_raw'][indexStr] = randomNum
-  --   if stats['dmg_absorbed_raw']['_OVERALL'] ~= nil then 
-  --     stats['dmg_absorbed_raw']['_OVERALL'] = stats['dmg_absorbed_raw']['_OVERALL'] + randomNum
-  --   else
-  --     stats['dmg_absorbed_raw']['_OVERALL'] = randomNum
-  --   end 
-    
-  --   api.Log:Info(tostring(randomNum))
-  -- end 
-
-  -- clear the meter to start fresh, and then update it
-  -- for i = 1, #statsMeterWnd.child do
-  --   -- Reset every child that doesn't have unit information written into it
-  --   -- Delete skillsetIcon if it exists
-  --   if statsMeterWnd.child[i].skillsetIcon ~= nil then
-  --     statsMeterWnd.child[i].skillsetIcon:Show(false)
-  --     statsMeterWnd.child[i].skillsetIcon = nil
-  --   end 
-  --   statsMeterWnd.child[i].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
-  --   statsMeterWnd.child[i].bgStatusBar.statLabel:SetText("")
-  --   statsMeterWnd.child[i].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
-  --   statsMeterWnd.child[i].bgStatusBar.statAmtLabel:SetText("")
-  --   statsMeterWnd.child[i].bgStatusBar:SetValue(0)
-  -- end
-  Update()
-end
--- Unit Type Filter Dropdown
-function statsMeterWnd.moveWnd.unitFiltersButton:SelectedProc()
-  local clickedFilter = self:GetSelectedIndex()
-  local text = self.dropdownItem[clickedFilter]
-  if unitFilters[text] ~= nil and unitFilters[text] == 0 then
-    unitFilters[text] = 1
-    self.dropdownItemColor[clickedFilter] = FONT_COLOR.GREEN
-    
-  elseif unitFilters[text] ~= nil and unitFilters[text] == 1 then
-    unitFilters[text] = 0
-    self.dropdownItemColor[clickedFilter] = FONT_COLOR.RED
-  end 
-
-  -- clear the meter to start fresh, and then update it
-  for i = 1, #statsMeterWnd.child do
-    -- Reset every child that doesn't have unit information written into it
-    -- Delete skillsetIcon if it exists
-    if statsMeterWnd.child[i].skillsetIcon ~= nil then
-      statsMeterWnd.child[i].skillsetIcon:Show(false)
-      -- statsMeterWnd.child[i].skillsetIcon = nil
-    end 
-    statsMeterWnd.child[i].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
-    statsMeterWnd.child[i].bgStatusBar.statLabel:SetText("")
-    statsMeterWnd.child[i].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
-    statsMeterWnd.child[i].bgStatusBar.statAmtLabel:SetText("")
-    statsMeterWnd.child[i].bgStatusBar:SetValue(0)
-  end
-  statsMeterWnd.moveWnd.unitFiltersButton:Select(0)
-  self:SetText("Filters")
-  Update()
-end
--- Main Event Handlers
 local function OnLoad()
-  settings = api.GetSettings("stats_meter")
+  local settings = api.GetSettings("stats_meter")
+  oldSettings = tableCopy(settings)
   -- Initialize settings if not filled out yet
   if settings["posX"] == nil then
     settings["posX"] = 0
@@ -1082,34 +646,515 @@ local function OnLoad()
     settings["mainFilter"] = 1
   end
 
-  if settings.posX == 0 and settings.posY == 0 then
-    statsMeterWnd:AddAnchor("RIGHT", "UIParent", 0, 0)
-  else 
-    statsMeterWnd:AddAnchor("TOPLEFT", "UIParent", settings.posX, settings.posY)
+  -- TODO: This is the section where we put everything else
+  statsMeterWnd = api.Interface:CreateEmptyWindow("statsMeterWnd", "UIParent")
+  statsMeterWnd:SetExtent(280, 280)
+  --statsMeterWnd:SetTitle("dps meter")
+  --statsMeterWnd:SetCloseOnEscape(false)
+  --statsMeterWnd.titleBar.closeButton:Show(false)
+  statsMeterWnd.child = {}
+  local offsetX = 30
+  local offsetY = 70
+  local labelHeight = 20
+  for k = 1, 10 do
+    -- Overall child widget and ranking # text
+    local id = tostring(k) .. ""
+    statsMeterWnd.child[k] = api.Interface:CreateWidget("label", id, statsMeterWnd)
+    local child = statsMeterWnd.child[k]
+    child:AddAnchor("TOPLEFT", 12, offsetY)
+    child:SetExtent(255, labelHeight)
+    child:SetText(id)
+    child.style:SetColor(1, 1, 1, 1)
+    child.style:SetAlign(ALIGN.LEFT)
+
+    -- Status bar and background
+    local statusBar = api.Interface:CreateStatusBar("bgStatusBar", child, "item_evolving_material")
+    child.bgStatusBar = statusBar
+
+    -- Correcting the coords to show only top layer (texture width divided by 2)  
+    local coords = {
+      GetTextureInfo(TEXTURE_PATH.COSPLAY_ENCHANT, "grade_01"):GetCoords()
+    }
+    child.bgStatusBar.statusBar:SetBarTextureCoords(coords[1], coords[2], coords[3] / 2, coords[4])  
+    
+    child.bgStatusBar:AddAnchor("TOPLEFT", child, 25, 1)
+    child.bgStatusBar:AddAnchor("BOTTOMRIGHT", child, -1, -1)
+    child.bgStatusBar:SetMinMaxValues(0, 100)
+    child.bgStatusBar:SetBarColor({
+      ConvertColor(222),
+      ConvertColor(177),
+      ConvertColor(102),
+      1
+    })
+    child.bgStatusBar.bg:SetColor(ConvertColor(76), ConvertColor(45), ConvertColor(8), 0.4)
+    
+    -- Display text for name and # + % of selected stat 
+    local statLabel = child.bgStatusBar:CreateChildWidget("label", "statLabel", 0, true)
+    statLabel.style:SetShadow(true)
+    statLabel.style:SetAlign(ALIGN.LEFT)
+    ApplyTextColor(statLabel, FONT_COLOR.WHITE)
+    statLabel:AddAnchor("LEFT", 5, 0)
+    local statAmtLabel = child.bgStatusBar:CreateChildWidget("label", "statAmtLabel", 0, true)
+    statAmtLabel.style:SetShadow(true)
+    statAmtLabel.style:SetAlign(ALIGN.RIGHT)
+    ApplyTextColor(statAmtLabel, FONT_COLOR.WHITE)
+    statAmtLabel:AddAnchor("RIGHT", -5, 0)
+    
+    offsetY = offsetY + labelHeight
+  end
+
+
+  -- Timer clock icon and label
+  local timerLabel = statsMeterWnd:CreateChildWidget("label", "timerLabel", 0, true)
+  timerLabel.style:SetShadow(true)
+  timerLabel.style:SetAlign(ALIGN.RIGHT)
+  timerLabel:AddAnchor("TOPRIGHT", statsMeterWnd, "TOPRIGHT", -20, 55)
+  timerLabel.style:SetFontSize(FONT_SIZE.LARGE)
+  local clockIcon = timerLabel:CreateChildWidget("label", "clockIcon", 0, true)  
+  clockIcon:AddAnchor("TOPLEFT", timerLabel, "TOPLEFT", -67, -14)
+  local clockIconTexture = clockIcon:CreateImageDrawable(TEXTURE_PATH.HUD, "background")
+  clockIconTexture:SetTextureInfo("clock")
+  clockIconTexture:AddAnchor("TOPLEFT", clockIcon, 0, 0)
+
+  --- Add dragable bar across top
+  local moveWnd = statsMeterWnd:CreateChildWidget("label", "moveWnd", 0, true)
+  moveWnd:AddAnchor("TOPLEFT", statsMeterWnd, 12, 0)
+  moveWnd:AddAnchor("TOPRIGHT", statsMeterWnd, 0, 0)
+  moveWnd:SetHeight(80)
+  moveWnd.style:SetFontSize(FONT_SIZE.XLARGE)
+  moveWnd.style:SetAlign(ALIGN.LEFT)
+  moveWnd:SetText("")
+  ApplyTextColor(moveWnd, FONT_COLOR.WHITE)
+  -- Drag handlers for dragable bar
+  function moveWnd:OnDragStart()
+    if api.Input:IsShiftKeyDown() then
+      statsMeterWnd:StartMoving()
+      api.Cursor:ClearCursor()
+      api.Cursor:SetCursorImage(CURSOR_PATH.MOVE, 0, 0)
+    end
+  end
+  moveWnd:SetHandler("OnDragStart", moveWnd.OnDragStart)
+  function moveWnd:OnDragStop()
+    statsMeterWnd:StopMovingOrSizing()
+    api.Cursor:ClearCursor()
+  end
+  moveWnd:SetHandler("OnDragStop", moveWnd.OnDragStop)
+  moveWnd:EnableDrag(true)
+
+  -- Refresh button for timer
+  local refreshButton = statsMeterWnd:CreateChildWidget("button", "refreshButton", 0, true)
+  refreshButton:SetExtent(55, 26)
+  refreshButton:AddAnchor("RIGHT", timerLabel, "RIGHT", -75, 0)
+  refreshButton:Show(true)
+  api.Interface:ApplyButtonSkin(refreshButton, BUTTON_BASIC.RESET)
+
+  local unitFiltersDisplayColors = {
+    FONT_COLOR.RED,
+    FONT_COLOR.RED,
+    FONT_COLOR.RED
+  }
+
+  -- Main Filter Dropdown Menu (Also used as title)
+  local filterButton = api.Interface:CreateComboBox(moveWnd)
+  filterButton:AddAnchor("TOPLEFT", moveWnd, 0, 3)
+  filterButton:SetExtent(200, 30)
+  filterButton.dropdownItem = filtersDisplay
+  filterButton:Select(1)
+  filterButton.style:SetFontSize(FONT_SIZE.XLARGE)
+  ApplyTextColor(filterButton, FONT_COLOR.WHITE)
+  filterButton.bg:SetColor(0,0,0,0)
+  filterButton:SetHighlightTextColor(1, 1, 1, 1)
+  filterButton:SetPushedTextColor(1, 1, 1, 1)
+  filterButton:SetDisabledTextColor(1, 1, 1, 1)
+  filterButton:SetTextColor(1, 1, 1, 1)
+  moveWnd.filterButton = filterButton
+
+  -- Unit Filters Dropdown Menu
+  local unitFiltersButton = api.Interface:CreateComboBox(moveWnd)
+  unitFiltersButton:AddAnchor("RIGHT", timerLabel, -105, 0)
+  unitFiltersButton:SetExtent(130, 30)
+  unitFiltersButton.dropdownItem = unitFiltersDisplay
+  unitFiltersButton.dropdownItemColor = unitFiltersDisplayColors
+  unitFiltersButton:SetText("Filters")
+  unitFiltersButton:Select(0)
+  unitFiltersButton.style:SetFontSize(FONT_SIZE.LARGE)
+  ApplyTextColor(unitFiltersButton, FONT_COLOR.WHITE)
+  unitFiltersButton.bg:SetColor(0,0,0,0)
+  unitFiltersButton:SetHighlightTextColor(1, 1, 1, 1)
+  unitFiltersButton:SetPushedTextColor(1, 1, 1, 1)
+  unitFiltersButton:SetDisabledTextColor(1, 1, 1, 1)
+  unitFiltersButton:SetTextColor(1, 1, 1, 1)
+  moveWnd.unitFiltersButton = unitFiltersButton
+
+  -- Minimize button
+  local minimizeButton = statsMeterWnd:CreateChildWidget("button", "minimizeButton", 0, true)
+  minimizeButton:SetExtent(26, 28)
+  minimizeButton:AddAnchor("TOPRIGHT", statsMeterWnd, -12, 5)
+  local minimizeButtonTexture = minimizeButton:CreateImageDrawable(TEXTURE_PATH.HUD, "background")
+  minimizeButtonTexture:SetTexture(TEXTURE_PATH.HUD)
+  minimizeButtonTexture:SetCoords(754, 121, 26, 28)
+  minimizeButtonTexture:AddAnchor("TOPLEFT", minimizeButton, 0, 0)
+  minimizeButtonTexture:SetExtent(26, 28)
+
+  --- Minimized view & maximize button
+  minimizedWnd = api.Interface:CreateEmptyWindow("minimizedWnd", "UIParent")
+  minimizedWnd:SetExtent(280, 40)
+  minimizedWnd:AddAnchor("TOPRIGHT", statsMeterWnd, 0, 0)
+  local minimizedLabel = minimizedWnd:CreateChildWidget("label", "minimizedLabel", 0, true)
+  minimizedLabel:SetText("Stats Meter (Hidden)")
+  minimizedLabel.style:SetFontSize(FONT_SIZE.XLARGE)
+  minimizedLabel.style:SetAlign(ALIGN.RIGHT)
+  minimizedLabel:AddAnchor("TOPRIGHT", minimizedWnd, -100, FONT_SIZE.XLARGE)
+  -- Dragable bar for minimized window too
+  local minimizedMoveWnd = minimizedWnd:CreateChildWidget("label", "minimizedMoveWnd", 0, true)
+  minimizedMoveWnd:AddAnchor("TOPLEFT", minimizedWnd, 12, 0)
+  minimizedMoveWnd:AddAnchor("TOPRIGHT", minimizedWnd, 0, 0)
+  minimizedMoveWnd:SetHeight(40)
+  -- Drag handlers for dragable bar
+  function minimizedMoveWnd:OnDragStart(arg)
+    if arg == "LeftButton" and api.Input:IsShiftKeyDown() then
+      minimizedWnd:StartMoving()
+      api.Cursor:ClearCursor()
+      api.Cursor:SetCursorImage(CURSOR_PATH.MOVE, 0, 0)
+    end
+  end
+  minimizedMoveWnd:SetHandler("OnDragStart", minimizedMoveWnd.OnDragStart)
+  function minimizedMoveWnd:OnDragStop()
+    minimizedWnd:StopMovingOrSizing()
+    api.Cursor:ClearCursor()
+  end
+  minimizedMoveWnd:SetHandler("OnDragStop", minimizedMoveWnd.OnDragStop)
+  minimizedMoveWnd:EnableDrag(true)
+  -- Toggle back to maximized view with this button
+  local maximizeButton = minimizedWnd:CreateChildWidget("button", "maximizeButton", 0, true)
+  maximizeButton:SetExtent(26, 28)
+  maximizeButton:AddAnchor("TOPRIGHT", minimizedWnd, -12, 5)
+  local maximizeButtonTexture = maximizeButton:CreateImageDrawable(TEXTURE_PATH.HUD, "background")
+  maximizeButtonTexture:SetTexture(TEXTURE_PATH.HUD)
+  maximizeButtonTexture:SetCoords(754, 94, 26, 28)
+  maximizeButtonTexture:AddAnchor("TOPLEFT", maximizeButton, 0, 0)
+  maximizeButtonTexture:SetExtent(26, 28)
+  -- Minimized Window Background Styling
+  minimizedWnd.bg = minimizedWnd:CreateNinePartDrawable(TEXTURE_PATH.HUD, "background")
+  minimizedWnd.bg:SetTextureInfo("bg_quest")
+  minimizedWnd.bg:SetColor(0, 0, 0, 0.5)
+  minimizedWnd.bg:AddAnchor("TOPLEFT", minimizedWnd, 0, 0)
+  minimizedWnd.bg:AddAnchor("BOTTOMRIGHT", minimizedWnd, 0, 0)
+
+  minimizedWnd:Show(false) --> default to being hidden
+
+  -- Main Window Background Styling
+  statsMeterWnd.bg = statsMeterWnd:CreateNinePartDrawable(TEXTURE_PATH.HUD, "background")
+  statsMeterWnd.bg:SetTextureInfo("bg_quest")
+  statsMeterWnd.bg:SetColor(0, 0, 0, 0.5)
+  statsMeterWnd.bg:AddAnchor("TOPLEFT", statsMeterWnd, 0, 0)
+  statsMeterWnd.bg:AddAnchor("BOTTOMRIGHT", statsMeterWnd, 0, 0)
+
+
+
+  -- Show the damn thing.
+  statsMeterWnd:Show(true)
+
+  --- Meter Reset Prompt window
+  -- Actual window
+  resetPromptWnd = api.Interface:CreateWindow("resetPromptWnd", "Dungeon Entry Detected", 0, 0)
+  resetPromptWnd:AddAnchor("CENTER", "UIParent", 0, 0)
+  resetPromptWnd:SetExtent(300, 150)
+  -- Prompt label and buttons
+  resetPromptText = "You are entering a new dungeon. \n \n  Would you like to reset your meter?"
+  resetPromptLabel = resetPromptWnd:CreateChildWidget("textbox", "resetPromptLabel", 0, true)
+  resetPromptLabel:SetText(resetPromptText)
+  resetPromptLabel:SetExtent(240, FONT_SIZE.LARGE * 2.5)
+  resetPromptLabel.style:SetAlign(ALIGN.CENTER)
+  ApplyTextColor(resetPromptLabel, FONT_COLOR.DEFAULT)
+  resetPromptLabel:AddAnchor("CENTER", resetPromptWnd, 0, 0)
+  resetPromptYesBtn = resetPromptWnd:CreateChildWidget("button", "resetPromptYesBtn", 0, true)
+  api.Interface:ApplyButtonSkin(resetPromptYesBtn, BUTTON_BASIC.DEFAULT)
+  resetPromptYesBtn:AddAnchor("BOTTOMLEFT", resetPromptWnd, 10, -10)
+  resetPromptYesBtn:SetText("Yes")
+  resetPromptNoBtn = resetPromptWnd:CreateChildWidget("button", "resetPromptNoBtn", 0, true)
+  api.Interface:ApplyButtonSkin(resetPromptNoBtn, BUTTON_BASIC.DEFAULT)
+  resetPromptNoBtn:AddAnchor("BOTTOMRIGHT", resetPromptWnd, -10, -10)
+  resetPromptNoBtn:SetText("No")
+  -- Starts off hidden (Hide the damn thing)
+  resetPromptWnd:Show(false)
+
+
+  
+
+  -- Where statistics are set
+  stats = {}
+  stats["total_dmg"] = {}
+  stats["dps"] = {}
+  stats["total_healing"] = {}
+  stats["hps"] = {}
+  stats['dmg_taken'] = {}
+  stats['dmg_absorbed_raw'] = {}
+  stats['dmg_absorbed'] = {}
+
+  -- Changed by onclick on dropdown
+  selectedPage = 1
+
+  unitNames = {}
+  unitTypes = {}
+  unitFactions = {}
+
+  -- Last known channels
+  lastKnownChannel = nil
+  currentChannel = nil
+
+  -- Relative timer for DPS/HPS meters
+  startingTimer = api.Time:GetUiMsec()
+
+  -- Crude total dmg calc
+  local function addDmgNumber(sourceUnitId, targetUnitId, amount, skillType, hitOrMissType, weaponDamage, isSynergy, distance)
+    local sourceUnitIdStr = tostring(sourceUnitId)
+    
+    local unitName = api.Unit:GetUnitNameById(sourceUnitId)
+    local unitInfo = nil 
+    local unitType = nil
+    if unitTypes[sourceUnitIdStr] == nil then 
+      unitInfo = api.Unit:GetUnitInfoById(sourceUnitId)
+      if unitInfo ~= nil and unitInfo.type ~= nil then 
+        unitType = unitInfo.type
+        unitTypes[sourceUnitIdStr] = unitType
+      end 
+    else
+      unitType = unitTypes[sourceUnitIdStr]
+    end 
+
+    
+    local targetName = api.Unit:GetUnitNameById(targetUnitId)
+
+    if unitType ~= "npc" or (unitType == "npc" and unitFilters["NPCs"] == 1) then 
+      -- Add to individual player totals
+      if skillType == "SKILL" or skillType == "SWING" or skillType == "DOT" then 
+        if stats["total_dmg"][sourceUnitIdStr] == nil then
+          stats["total_dmg"][sourceUnitIdStr] = tonumber(amount) * -1
+        else  
+          stats["total_dmg"][sourceUnitIdStr] = stats["total_dmg"][sourceUnitIdStr] + (tonumber(amount) * -1)
+        end
+        -- Add to overall (all player) totals
+        if stats["total_dmg"]["_OVERALL"] == nil then
+          stats["total_dmg"]["_OVERALL"] = tonumber(amount) * -1
+        else
+          stats["total_dmg"]["_OVERALL"] = stats["total_dmg"]["_OVERALL"] + (tonumber(amount) * -1)
+        end
+      end
+      if skillType == "HEAL" then
+        if stats["total_healing"][sourceUnitIdStr] == nil then
+          stats["total_healing"][sourceUnitIdStr] = tonumber(amount)
+        else  
+          stats["total_healing"][sourceUnitIdStr] = stats["total_healing"][sourceUnitIdStr] + (tonumber(amount))
+        end
+        -- Add to overall (all player) totals
+        if stats["total_healing"]["_OVERALL"] == nil then
+          stats["total_healing"]["_OVERALL"] = tonumber(amount)
+        else
+          stats["total_healing"]["_OVERALL"] = stats["total_healing"]["_OVERALL"] + (tonumber(amount))
+        end
+      end
+    end
+  end
+
+  -- TODO: Crude Logging of combat messages. switch all non-personal logic over to this.
+  local function processCombatMessage(targetUnitId, combatEvent, source, target, ...)
+    local targetUnitIdStr = tostring(targetUnitId)
+    local unitInfo = nil 
+    local unitType = nil
+    if unitTypes[targetUnitIdStr] == nil then 
+      unitInfo = api.Unit:GetUnitInfoById(targetUnitId)
+      if unitInfo ~= nil and unitInfo.type ~= nil then 
+        if unitInfo.type ~= nil then 
+          unitType = unitInfo.type
+          unitTypes[targetUnitIdStr] = unitType
+        end
+      end 
+    else
+      unitType = unitTypes[targetUnitIdStr]
+    end 
+    
+    if unitType ~= "npc" or (unitType == "npc" and unitFilters["NPCs"] == 1) then 
+      if combatEvent == "SPELL_DAMAGE" or combatEvent == "SPELL_DOT_DAMAGE" or combatEvent == "MELEE_DAMAGE" then --> also needs "MELEE_DAMAGE"
+        
+        local result = ParseCombatMessage(combatEvent, unpack(arg))
+        -- Record damage taken
+        if stats["dmg_taken"][targetUnitIdStr] == nil then 
+          stats["dmg_taken"][targetUnitIdStr] = tonumber(result.damage) * -1
+        else
+          stats["dmg_taken"][targetUnitIdStr] = stats["dmg_taken"][targetUnitIdStr] + (tonumber(result.damage) * -1)
+        end 
+        -- Add to overall damage taken totals
+        if stats["dmg_taken"]["_OVERALL"] == nil then 
+          stats["dmg_taken"]["_OVERALL"] = tonumber(result.damage) * -1
+        else
+          stats["dmg_taken"]["_OVERALL"] = stats["dmg_taken"]["_OVERALL"] + (tonumber(result.damage) * -1)
+        end 
+        -- Record damage abosrbed
+        if stats["dmg_absorbed_raw"][targetUnitIdStr] == nil then 
+          stats["dmg_absorbed_raw"][targetUnitIdStr] = tonumber(result.reduced) * 1
+        else
+          stats["dmg_absorbed_raw"][targetUnitIdStr] = stats["dmg_absorbed_raw"][targetUnitIdStr] + (tonumber(result.reduced) * 1)
+        end 
+        -- Add to overall damage absorbed totals
+        if stats["dmg_absorbed_raw"]["_OVERALL"] == nil then 
+          stats["dmg_absorbed_raw"]["_OVERALL"] = tonumber(result.reduced) * 1
+        else
+          stats["dmg_absorbed_raw"]["_OVERALL"] = stats["dmg_absorbed_raw"]["_OVERALL"] + (tonumber(result.reduced) * 1)
+        end 
+      end 
+    end
   end 
 
-  if settings.playerFilter ~= nil then
-    unitFilters["Players"] = settings.playerFilter
-    if unitFilters["Players"] == 1 then
-      statsMeterWnd.moveWnd.unitFiltersButton.dropdownItemColor[1] = FONT_COLOR.GREEN
+
+  function statsMeterWnd:OnEvent(event, ...)
+    if event == "COMBAT_TEXT" then
+      addDmgNumber(unpack(arg))
+      -- updateDpsHpsNumbers()
+    end
+    if event == "COMBAT_MSG" then
+      processCombatMessage(unpack(arg))
+      -- updateAbsorbedDmgNumbers()
+    end
+    if event == "CHAT_JOINED_CHANNEL" then 
+      updateLastKnownChannels(unpack(arg))
     end 
+    if event == "CHAT_LEAVED_CHANNEL" then
+      return nil --> pass
+    end
+  end
+  statsMeterWnd:SetHandler("OnEvent", statsMeterWnd.OnEvent)
+  statsMeterWnd:RegisterEvent("COMBAT_TEXT")
+  statsMeterWnd:RegisterEvent("COMBAT_MSG")
+  statsMeterWnd:RegisterEvent("CHAT_JOINED_CHANNEL")
+  statsMeterWnd:RegisterEvent("CHAT_LEAVED_CHANNEL")
+
+  function statsMeterWnd:OnUpdate(dt)
+    OnUpdate(dt)
   end 
-  if settings.hostileFilter ~= nil then
-    unitFilters["Hostiles"] = settings.hostileFilter
-    if unitFilters["Hostiles"] == 1 then
-      statsMeterWnd.moveWnd.unitFiltersButton.dropdownItemColor[2] = FONT_COLOR.GREEN
+  statsMeterWnd:SetHandler("OnUpdate", statsMeterWnd.OnUpdate)
+
+  -- Button Handlers
+  statsMeterWnd.refreshButton:SetHandler("OnClick", function()
+    saveLogFile()
+    reinitializeMeter()
+    Update()
+  end)
+
+  resetPromptWnd.resetPromptYesBtn:SetHandler("OnClick", function()
+    saveLogFile()
+    reinitializeMeter()
+    resetPromptWnd:Show(false)
+  end)
+
+  resetPromptWnd.resetPromptNoBtn:SetHandler("OnClick", function()
+    resetPromptWnd:Show(false)
+  end)
+
+  statsMeterWnd.minimizeButton:SetHandler("OnClick", function()
+    local statsMeterX, statsMeterY = statsMeterWnd:GetOffset()
+    minimizedWnd:RemoveAllAnchors()
+    minimizedWnd:AddAnchor("TOPRIGHT", statsMeterWnd, 0, 0)
+    statsMeterWnd:Show(false)
+    minimizedWnd:Show(true)
+  end)
+
+  minimizedWnd.maximizeButton:SetHandler("OnClick", function()
+    statsMeterWnd:RemoveAllAnchors()
+    statsMeterWnd:AddAnchor("TOPLEFT", minimizedWnd, 0, 0)
+    minimizedWnd:Show(false)
+    statsMeterWnd:Show(true)
+  end)
+
+  --- Dropdown Handlers
+  -- Main Filter Dropdown
+  function statsMeterWnd.moveWnd.filterButton:SelectedProc()
+    selectedPage = statsMeterWnd.moveWnd.filterButton:GetSelectedIndex()
+
+    -- for i = 1, 5000 do
+    --   indexStr = tostring(i)
+    --   randomNum = math.random(5000000, 100000000)
+    --   name = "PogMan" .. indexStr
+
+    --   unitNames[indexStr] = name
+    --   unitFactions[indexStr] = "friendly"
+    --   unitTypes[indexStr] = "character"
+    --   stats['total_dmg'][indexStr] = randomNum
+    --   if stats['total_dmg']['_OVERALL'] ~= nil then 
+    --     stats['total_dmg']['_OVERALL'] = stats['total_dmg']['_OVERALL'] + randomNum
+    --   else
+    --     stats['total_dmg']['_OVERALL'] = randomNum
+    --   end 
+    --   stats['total_healing'][indexStr] = randomNum
+    --   if stats['total_healing']['_OVERALL'] ~= nil then 
+    --     stats['total_healing']['_OVERALL'] = stats['total_healing']['_OVERALL'] + randomNum
+    --   else
+    --     stats['total_healing']['_OVERALL'] = randomNum
+    --   end 
+    --   stats['dmg_taken'][indexStr] = randomNum
+    --   if stats['dmg_taken']['_OVERALL'] ~= nil then 
+    --     stats['dmg_taken']['_OVERALL'] = stats['dmg_taken']['_OVERALL'] + randomNum
+    --   else
+    --     stats['dmg_taken']['_OVERALL'] = randomNum
+    --   end
+    --   stats['dmg_absorbed_raw'][indexStr] = randomNum
+    --   if stats['dmg_absorbed_raw']['_OVERALL'] ~= nil then 
+    --     stats['dmg_absorbed_raw']['_OVERALL'] = stats['dmg_absorbed_raw']['_OVERALL'] + randomNum
+    --   else
+    --     stats['dmg_absorbed_raw']['_OVERALL'] = randomNum
+    --   end 
+      
+    --   api.Log:Info(tostring(randomNum))
+    -- end 
+
+    -- clear the meter to start fresh, and then update it
+    -- for i = 1, #statsMeterWnd.child do
+    --   -- Reset every child that doesn't have unit information written into it
+    --   -- Delete skillsetIcon if it exists
+    --   if statsMeterWnd.child[i].skillsetIcon ~= nil then
+    --     statsMeterWnd.child[i].skillsetIcon:Show(false)
+    --     statsMeterWnd.child[i].skillsetIcon = nil
+    --   end 
+    --   statsMeterWnd.child[i].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
+    --   statsMeterWnd.child[i].bgStatusBar.statLabel:SetText("")
+    --   statsMeterWnd.child[i].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
+    --   statsMeterWnd.child[i].bgStatusBar.statAmtLabel:SetText("")
+    --   statsMeterWnd.child[i].bgStatusBar:SetValue(0)
+    -- end
+    Update()
+  end
+  -- Unit Type Filter Dropdown
+  function statsMeterWnd.moveWnd.unitFiltersButton:SelectedProc()
+    local clickedFilter = self:GetSelectedIndex()
+    local text = self.dropdownItem[clickedFilter]
+    if unitFilters[text] ~= nil and unitFilters[text] == 0 then
+      unitFilters[text] = 1
+      self.dropdownItemColor[clickedFilter] = FONT_COLOR.GREEN
+      
+    elseif unitFilters[text] ~= nil and unitFilters[text] == 1 then
+      unitFilters[text] = 0
+      self.dropdownItemColor[clickedFilter] = FONT_COLOR.RED
     end 
-  end 
-  if settings.npcFilter ~= nil then
-    unitFilters["NPCs"] = settings.npcFilter
-    if unitFilters["NPCs"] == 1 then
-      statsMeterWnd.moveWnd.unitFiltersButton.dropdownItemColor[3] = FONT_COLOR.GREEN
-    end 
-  end 
-  if settings.mainFilter ~= nil then 
-    selectedPage = settings.mainFilter
-    statsMeterWnd.moveWnd.filterButton:Select(selectedPage)
-  end 
+
+    -- clear the meter to start fresh, and then update it
+    for i = 1, #statsMeterWnd.child do
+      -- Reset every child that doesn't have unit information written into it
+      -- Delete skillsetIcon if it exists
+      if statsMeterWnd.child[i].skillsetIcon ~= nil then
+        statsMeterWnd.child[i].skillsetIcon:Show(false)
+        -- statsMeterWnd.child[i].skillsetIcon = nil
+      end 
+      statsMeterWnd.child[i].bgStatusBar.statLabel.style:SetColor(1, 1, 1, 1)
+      statsMeterWnd.child[i].bgStatusBar.statLabel:SetText("")
+      statsMeterWnd.child[i].bgStatusBar.statAmtLabel.style:SetColor(1, 1, 1, 1)
+      statsMeterWnd.child[i].bgStatusBar.statAmtLabel:SetText("")
+      statsMeterWnd.child[i].bgStatusBar:SetValue(0)
+    end
+    statsMeterWnd.moveWnd.unitFiltersButton:Select(0)
+    self:SetText("Filters")
+    Update()
+  end
+  --  
 end
 
 local function OnUnload()
@@ -1128,7 +1173,8 @@ local function OnUnload()
   statsMeterWnd = nil
   minimizedWnd:Show(false)
   minimizedWnd = nil
-  
 end
+stats_meter_addon.OnLoad = OnLoad
+stats_meter_addon.OnUnload = OnUnload
 
-return { name = "Stats Meter", author = "Michaelqt", version = "1.0.3", desc = "A stats meter covering damage, heals and more!", OnUnload = OnUnload, OnLoad = OnLoad }
+return stats_meter_addon
