@@ -5,7 +5,7 @@ local michaelClientLib = require("tier_2_sextant/michael_client")
 local stats_meter_addon = {
 	name = "Stats Meter",
 	author = "Michaelqt",
-	version = "2.0.1",
+	version = "2.0.2",
 	desc = "A stats meter covering damage, heals and more!"
 }
 local statsMeterWnd = nil
@@ -211,6 +211,11 @@ local function reinitializeMeter()
   stats["dmg_taken"] = {}
   stats["dmg_absorbed_raw"] = {}
   stats["dmg_absorbed"] = {}
+  -- reset details as well
+  statsDetails["total_dmg"] = {}
+  statsDetails["total_healing"] = {}
+  statsDetails["dmg_taken"] = {}
+  -- 
   if stats["_NAMES"] ~= nil then 
     stats["_NAMES"] = nil
     unitNames = {}
