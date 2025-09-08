@@ -1,11 +1,11 @@
 -- Addon API and settings
 local api = require("api")
-local michaelClientLib = require("tier_2_sextant/michael_client")
+local michaelClientLib = require("stats_meter/michael_client")
 
 local stats_meter_addon = {
 	name = "Stats Meter",
 	author = "Michaelqt",
-	version = "2.0.2",
+	version = "2.0.3",
 	desc = "A stats meter covering damage, heals and more!"
 }
 local statsMeterWnd = nil
