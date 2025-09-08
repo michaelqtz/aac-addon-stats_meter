@@ -1146,6 +1146,9 @@ local function OnLoad()
     end
     -- Filling details
     if combatEvent == "SPELL_DAMAGE" or combatEvent == "SPELL_DOT_DAMAGE" or combatEvent == "MELEE_DAMAGE" then 
+      if source == nil or source == "" or result.spellName == nil or result.spellName == "" then 
+        return
+      end
       if statsDetails["total_dmg"][source] == nil then 
         statsDetails["total_dmg"][source] = {}
       end
