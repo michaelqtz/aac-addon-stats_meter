@@ -1,19 +1,23 @@
 -- Addon API and settings
 local api = require("api")
+local michaelClientLib = require("tier_2_sextant/michael_client")
 
 local stats_meter_addon = {
 	name = "Stats Meter",
 	author = "Michaelqt",
-	version = "2.0.0",
+	version = "2.0.1",
 	desc = "A stats meter covering damage, heals and more!"
 }
 local statsMeterWnd = nil
 local minimizedWnd = nil
 local resetPromptWnd = nil
+local settingsWindow = nil
+local detailsWindow = nil
 
 local oldSettings = nil
 
 local stats = nil
+local statsDetails = nil
 
 local lastUpdate = 0
 local lastMeterUpdate = 0
@@ -229,7 +233,7 @@ end
 local function updateAbsorbedDmgNumbers()
   for key, value in pairs(stats["dmg_absorbed_raw"]) do
     local totalDmgTaken = stats["dmg_taken"][key] + stats["dmg_absorbed_raw"][key]
-    stats["dmg_absorbed"][key] = tostring(math.floor((stats["dmg_absorbed_raw"][key] / totalDmgTaken) * 1000) / 10)
+    stats["dmg_absorbed"][key] = tostring(math.floor((stats["dmg_absorbed_raw"][key] / totalDmgTaken) * 1000) / #statsMeterWnd.child)
   end
 end 
 
@@ -299,6 +303,81 @@ local function getSkillsetIcon(skillsetId, widget)
 
   return icon
 end
+
+local function getPrettyAmountNumber(number)
+  local prettyNumber
+  if number > 1000000 then -- Printing 1m -> infinity
+    prettyNumber = tostring(math.floor(number / 1000000 * 10) / 10) .. "m"
+  elseif number > 1000 then -- Printing 1k -> 999.9k
+    prettyNumber = tostring(math.floor(number / 1000 * 10) / 10) .. "k"
+  else
+    prettyNumber = tostring(number)
+  end
+  return prettyNumber
+end
+
+local function getUnitIdFromNames(unitName)
+  for unitId, name in pairs(unitNames) do
+    if name == unitName then
+      return unitId
+    end
+  end
+  return nil
+end 
+
+local function loadDamageBreakdown(unitName)
+  -- detailsWindow.title:SetText("Damage Breakdown for " .. tostring(unitName))
+  -- api.Log:Info("[Stats Meter] Loading damage breakdown for " .. tostring(unitName))
+  if unitName == nil or unitName == "" then return end
+  detailsWindow.playerLabel:SetText("Player: " .. tostring(unitName))
+
+  local currentStat = ""
+  local currentTable = pages[selectedPage].tableName
+  local detailsTable = ""
+  if currentTable == "total_dmg" or currentTable == "dps" then 
+    currentStat = "Damage"
+    detailsTable = "total_dmg"
+  elseif currentTable == "total_healing" or currentTable == "hps" then
+    currentStat = "Healing"
+    detailsTable = "total_healing"
+  elseif currentTable == "dmg_taken" or currentTable == "dmg_absorbed_raw" then
+    currentStat = "Damage Taken"
+    detailsTable = "dmg_taken"
+  end
+
+  local unitId = getUnitIdFromNames(unitName)
+  local totalDmg = stats["total_dmg"][unitId] or 0
+  local totalHealing = stats["total_healing"][unitId] or 0
+  local totalDmgTaken = stats["dmg_taken"][unitId] or 0
+  local totalDmgAbsorbed = stats["dmg_absorbed_raw"][unitId] or 0
+  local totalStat = stats[detailsTable][unitId] or 0
+  local dps = stats["dps"][unitId] or 0
+  local hps = stats["hps"][unitId] or 0
+  local dmgAbsorbedPercent = stats["dmg_absorbed"][unitId] or 0
+
+  local totalString = ""
+  if detailsTable == "total_dmg" then 
+    totalString = "Total Damage: " .. tostring(getPrettyAmountNumber(totalDmg)) .. " | DPS: " .. tostring(getPrettyAmountNumber(dps))
+  elseif detailsTable == "total_healing" then
+    totalString = "Total Healing: " .. tostring(getPrettyAmountNumber(totalHealing)) .. " | HPS: " .. tostring(getPrettyAmountNumber(hps))
+  elseif detailsTable == "dmg_taken" then
+    totalString = "Total Damage Taken: " .. tostring(getPrettyAmountNumber(totalDmgTaken)) .. " | Damage Absorbed: " .. tostring(getPrettyAmountNumber(totalDmgAbsorbed)) .. " (" .. tostring(dmgAbsorbedPercent) .. "%)"
+  end
+
+  local detailsString = ""
+  detailsString = detailsString .. totalString .. "\n"
+  local sortedSkills = getKeysSortedByValue(statsDetails[detailsTable][unitName] or {}, function(a, b) return a > b end)
+  -- api.Log:Info(sortedSkills)
+  for i, skillName in pairs(sortedSkills) do
+    local skillAmount = statsDetails[detailsTable][unitName][skillName]
+    local skillPercent = math.floor((skillAmount / totalStat) * 1000) / 10
+    local skillAmountText = getPrettyAmountNumber(skillAmount)
+    detailsString = detailsString .. tostring(i) .. ". " .. tostring(skillName) .. ": " .. tostring(skillAmountText) .. " (" .. tostring(skillPercent) .. "%)\n"
+  end
+
+  detailsWindow.detailsTextEdit:SetText(detailsString)
+  detailsWindow:Show(true)
+end 
 
 -- Main Drawing Update Function
 local function Update()
@@ -543,7 +622,7 @@ local function OnUpdate(dt)
   statsMeterWnd.timerLabel:SetText(displayTimeString(api.Time:GetUiMsec() - startingTimer))
   -- Hack to color dropdowns as white
   ApplyTextColor(statsMeterWnd.moveWnd.filterButton, FONT_COLOR.WHITE)
-  ApplyTextColor(statsMeterWnd.moveWnd.unitFiltersButton, FONT_COLOR.WHITE)
+  ApplyTextColor(statsMeterWnd.moveWnd.unitFiltersButton, FONT_COLOR.DEFAULT)
 
   -- If this is the first frame drawn, move the meter to where the settings point.
   if firstLoad then 
@@ -646,6 +725,41 @@ local function OnLoad()
     settings["mainFilter"] = 1
   end
 
+  --- Meter Settings window
+  -- Settings
+	settingsWindow = api.Interface:CreateWindow("settingsWindow", "Stats Meter Settings", 0, 0)
+	settingsWindow:AddAnchor("CENTER", "UIParent", 0, 0)
+	settingsWindow:SetExtent(300, 100)
+	settingsWindow:Show(false)
+	-- Add it to the michael client addon menu bara
+	michaelClientLib:initializeMichaelClient()
+	local configMenu = ADDON:GetContent(UIC.SYSTEM_CONFIG_FRAME)
+	configMenu.michaelClient:AddAddon("Stats Meter", function()
+		settingsWindow:Show(true)
+	end)
+
+  --- Meter Details Window
+  detailsWindow = api.Interface:CreateWindow("detailsWindow", "Stats Meter Details", 0, 0)
+  detailsWindow:AddAnchor("CENTER", "UIParent", 0, 0)
+  detailsWindow:SetExtent(430, 530)
+  detailsWindow:Show(false)
+  -- Player label
+  local playerLabel = detailsWindow:CreateChildWidget("label", "playerNameLabel", 0, true)
+  playerLabel:AddAnchor("TOPLEFT", detailsWindow, 12, 46)
+  playerLabel.style:SetFontSize(FONT_SIZE.LARGE)
+  playerLabel.style:SetAlign(ALIGN.LEFT)
+  playerLabel:SetText("Unit: ")
+  -- playerLabel:SetExtent(100, 20)
+  ApplyTextColor(playerLabel, FONT_COLOR.DEFAULT)
+  detailsWindow.playerLabel = playerLabel
+  -- Text area for details
+  local detailsTextEdit = W_CTRL.CreateMultiLineEdit("detailsTextEdit", detailsWindow)
+  detailsTextEdit:AddAnchor("TOPLEFT", detailsWindow, 12, 62)
+  detailsTextEdit:AddAnchor("BOTTOMRIGHT", detailsWindow, -12, -12)
+  detailsTextEdit:SetMaxTextLength(5000)
+  detailsWindow.detailsTextEdit = detailsTextEdit
+
+
   -- TODO: This is the section where we put everything else
   statsMeterWnd = api.Interface:CreateEmptyWindow("statsMeterWnd", "UIParent")
   statsMeterWnd:SetExtent(280, 280)
@@ -654,9 +768,9 @@ local function OnLoad()
   --statsMeterWnd.titleBar.closeButton:Show(false)
   statsMeterWnd.child = {}
   local offsetX = 30
-  local offsetY = 70
+  local offsetY = 32
   local labelHeight = 20
-  for k = 1, 10 do
+  for k = 1, 12 do
     -- Overall child widget and ranking # text
     local id = tostring(k) .. ""
     statsMeterWnd.child[k] = api.Interface:CreateWidget("label", id, statsMeterWnd)
@@ -666,6 +780,10 @@ local function OnLoad()
     child:SetText(id)
     child.style:SetColor(1, 1, 1, 1)
     child.style:SetAlign(ALIGN.LEFT)
+    function child:OnClick()
+      loadDamageBreakdown(child.bgStatusBar.statLabel:GetText())
+    end 
+    child:SetHandler("OnClick", child.OnClick)
 
     -- Status bar and background
     local statusBar = api.Interface:CreateStatusBar("bgStatusBar", child, "item_evolving_material")
@@ -704,23 +822,12 @@ local function OnLoad()
   end
 
 
-  -- Timer clock icon and label
-  local timerLabel = statsMeterWnd:CreateChildWidget("label", "timerLabel", 0, true)
-  timerLabel.style:SetShadow(true)
-  timerLabel.style:SetAlign(ALIGN.RIGHT)
-  timerLabel:AddAnchor("TOPRIGHT", statsMeterWnd, "TOPRIGHT", -20, 55)
-  timerLabel.style:SetFontSize(FONT_SIZE.LARGE)
-  local clockIcon = timerLabel:CreateChildWidget("label", "clockIcon", 0, true)  
-  clockIcon:AddAnchor("TOPLEFT", timerLabel, "TOPLEFT", -67, -14)
-  local clockIconTexture = clockIcon:CreateImageDrawable(TEXTURE_PATH.HUD, "background")
-  clockIconTexture:SetTextureInfo("clock")
-  clockIconTexture:AddAnchor("TOPLEFT", clockIcon, 0, 0)
 
   --- Add dragable bar across top
   local moveWnd = statsMeterWnd:CreateChildWidget("label", "moveWnd", 0, true)
   moveWnd:AddAnchor("TOPLEFT", statsMeterWnd, 12, 0)
   moveWnd:AddAnchor("TOPRIGHT", statsMeterWnd, 0, 0)
-  moveWnd:SetHeight(80)
+  moveWnd:SetHeight(35)
   moveWnd.style:SetFontSize(FONT_SIZE.XLARGE)
   moveWnd.style:SetAlign(ALIGN.LEFT)
   moveWnd:SetText("")
@@ -740,13 +847,34 @@ local function OnLoad()
   end
   moveWnd:SetHandler("OnDragStop", moveWnd.OnDragStop)
   moveWnd:EnableDrag(true)
+  -- Background for Title Bar
+  moveWnd.bg = moveWnd:CreateNinePartDrawable(TEXTURE_PATH.HUD, "background")
+  moveWnd.bg:SetTextureInfo("bg_quest")
+  moveWnd.bg:SetColor(0, 0, 0, 0.7)
+  moveWnd.bg:AddAnchor("TOPLEFT", moveWnd, -12, 0)
+  moveWnd.bg:AddAnchor("BOTTOMRIGHT", moveWnd, 0, 0)
+
+  
+  -- Timer clock icon and label
+  local timerLabel = statsMeterWnd:CreateChildWidget("label", "timerLabel", 0, true)
+  timerLabel.style:SetShadow(true)
+  timerLabel.style:SetAlign(ALIGN.RIGHT)
+  timerLabel:AddAnchor("TOPRIGHT", statsMeterWnd, "TOPRIGHT", -60, 15)
+  timerLabel.style:SetFontSize(FONT_SIZE.SMALL)
+  local clockIcon = timerLabel:CreateChildWidget("label", "clockIcon", 0, true)  
+  clockIcon:AddAnchor("TOPRIGHT", timerLabel, "TOPLEFT", -32, -10)
+  clockIcon:SetExtent(FONT_SIZE.SMALL *2, FONT_SIZE.SMALL *2)
+  local clockIconTexture = clockIcon:CreateImageDrawable(TEXTURE_PATH.HUD, "background")
+  clockIconTexture:SetTextureInfo("clock")
+  clockIconTexture:AddAnchor("TOPLEFT", clockIcon, 0, 0)
+  clockIconTexture:AddAnchor("BOTTOMRIGHT", clockIcon, 0, 0)
 
   -- Refresh button for timer
   local refreshButton = statsMeterWnd:CreateChildWidget("button", "refreshButton", 0, true)
-  refreshButton:SetExtent(55, 26)
-  refreshButton:AddAnchor("RIGHT", timerLabel, "RIGHT", -75, 0)
+  refreshButton:AddAnchor("TOPRIGHT", moveWnd, -35, 6)
   refreshButton:Show(true)
   api.Interface:ApplyButtonSkin(refreshButton, BUTTON_BASIC.RESET)
+  refreshButton:SetExtent(20, 20)
 
   local unitFiltersDisplayColors = {
     FONT_COLOR.RED,
@@ -756,40 +884,42 @@ local function OnLoad()
 
   -- Main Filter Dropdown Menu (Also used as title)
   local filterButton = api.Interface:CreateComboBox(moveWnd)
-  filterButton:AddAnchor("TOPLEFT", moveWnd, 0, 3)
-  filterButton:SetExtent(200, 30)
+  filterButton:AddAnchor("TOPLEFT", moveWnd, -4, 0)
+  filterButton:SetExtent(150, 30)
   filterButton.dropdownItem = filtersDisplay
   filterButton:Select(1)
-  filterButton.style:SetFontSize(FONT_SIZE.XLARGE)
+  filterButton.style:SetFontSize(FONT_SIZE.LARGE)
   ApplyTextColor(filterButton, FONT_COLOR.WHITE)
   filterButton.bg:SetColor(0,0,0,0)
   filterButton:SetHighlightTextColor(1, 1, 1, 1)
   filterButton:SetPushedTextColor(1, 1, 1, 1)
   filterButton:SetDisabledTextColor(1, 1, 1, 1)
   filterButton:SetTextColor(1, 1, 1, 1)
+  filterButton.button:Show(false) -- Hide dropdown arrow
   moveWnd.filterButton = filterButton
 
   -- Unit Filters Dropdown Menu
-  local unitFiltersButton = api.Interface:CreateComboBox(moveWnd)
-  unitFiltersButton:AddAnchor("RIGHT", timerLabel, -105, 0)
-  unitFiltersButton:SetExtent(130, 30)
+  local unitFiltersButton = api.Interface:CreateComboBox(settingsWindow)
+  unitFiltersButton:AddAnchor("TOPLEFT", settingsWindow, 10, 50)
+  unitFiltersButton:SetExtent(100, 30)
   unitFiltersButton.dropdownItem = unitFiltersDisplay
   unitFiltersButton.dropdownItemColor = unitFiltersDisplayColors
   unitFiltersButton:SetText("Filters")
   unitFiltersButton:Select(0)
   unitFiltersButton.style:SetFontSize(FONT_SIZE.LARGE)
-  ApplyTextColor(unitFiltersButton, FONT_COLOR.WHITE)
-  unitFiltersButton.bg:SetColor(0,0,0,0)
+  ApplyTextColor(unitFiltersButton, FONT_COLOR.DEFAULT)
+  -- unitFiltersButton.bg:SetColor(0,0,0,0)
   unitFiltersButton:SetHighlightTextColor(1, 1, 1, 1)
   unitFiltersButton:SetPushedTextColor(1, 1, 1, 1)
   unitFiltersButton:SetDisabledTextColor(1, 1, 1, 1)
   unitFiltersButton:SetTextColor(1, 1, 1, 1)
+  -- unitFiltersButton.button:Show(false) -- Hide dropdown arrow
   moveWnd.unitFiltersButton = unitFiltersButton
 
   -- Minimize button
   local minimizeButton = statsMeterWnd:CreateChildWidget("button", "minimizeButton", 0, true)
   minimizeButton:SetExtent(26, 28)
-  minimizeButton:AddAnchor("TOPRIGHT", statsMeterWnd, -12, 5)
+  minimizeButton:AddAnchor("TOPRIGHT", statsMeterWnd, -9, 3)
   local minimizeButtonTexture = minimizeButton:CreateImageDrawable(TEXTURE_PATH.HUD, "background")
   minimizeButtonTexture:SetTexture(TEXTURE_PATH.HUD)
   minimizeButtonTexture:SetCoords(754, 121, 26, 28)
@@ -798,18 +928,18 @@ local function OnLoad()
 
   --- Minimized view & maximize button
   minimizedWnd = api.Interface:CreateEmptyWindow("minimizedWnd", "UIParent")
-  minimizedWnd:SetExtent(280, 40)
+  minimizedWnd:SetExtent(130, 30)
   minimizedWnd:AddAnchor("TOPRIGHT", statsMeterWnd, 0, 0)
   local minimizedLabel = minimizedWnd:CreateChildWidget("label", "minimizedLabel", 0, true)
-  minimizedLabel:SetText("Stats Meter (Hidden)")
-  minimizedLabel.style:SetFontSize(FONT_SIZE.XLARGE)
+  minimizedLabel:SetText("Stats Meter")
+  minimizedLabel.style:SetFontSize(FONT_SIZE.LARGE)
   minimizedLabel.style:SetAlign(ALIGN.RIGHT)
-  minimizedLabel:AddAnchor("TOPRIGHT", minimizedWnd, -100, FONT_SIZE.XLARGE)
+  minimizedLabel:AddAnchor("TOPRIGHT", minimizedWnd, -40, FONT_SIZE.LARGE - 2)
   -- Dragable bar for minimized window too
   local minimizedMoveWnd = minimizedWnd:CreateChildWidget("label", "minimizedMoveWnd", 0, true)
   minimizedMoveWnd:AddAnchor("TOPLEFT", minimizedWnd, 12, 0)
   minimizedMoveWnd:AddAnchor("TOPRIGHT", minimizedWnd, 0, 0)
-  minimizedMoveWnd:SetHeight(40)
+  minimizedMoveWnd:SetHeight(30)
   -- Drag handlers for dragable bar
   function minimizedMoveWnd:OnDragStart(arg)
     if arg == "LeftButton" and api.Input:IsShiftKeyDown() then
@@ -828,7 +958,7 @@ local function OnLoad()
   -- Toggle back to maximized view with this button
   local maximizeButton = minimizedWnd:CreateChildWidget("button", "maximizeButton", 0, true)
   maximizeButton:SetExtent(26, 28)
-  maximizeButton:AddAnchor("TOPRIGHT", minimizedWnd, -12, 5)
+  maximizeButton:AddAnchor("TOPRIGHT", minimizedWnd, -12, 0)
   local maximizeButtonTexture = maximizeButton:CreateImageDrawable(TEXTURE_PATH.HUD, "background")
   maximizeButtonTexture:SetTexture(TEXTURE_PATH.HUD)
   maximizeButtonTexture:SetCoords(754, 94, 26, 28)
@@ -879,6 +1009,8 @@ local function OnLoad()
   -- Starts off hidden (Hide the damn thing)
   resetPromptWnd:Show(false)
 
+  
+
 
   
 
@@ -891,6 +1023,11 @@ local function OnLoad()
   stats['dmg_taken'] = {}
   stats['dmg_absorbed_raw'] = {}
   stats['dmg_absorbed'] = {}
+
+  statsDetails = {}
+  statsDetails["total_dmg"] = {}
+  statsDetails["total_healing"] = {}
+  statsDetails['dmg_taken'] = {}
 
   -- Changed by onclick on dropdown
   selectedPage = 1
@@ -973,11 +1110,9 @@ local function OnLoad()
     else
       unitType = unitTypes[targetUnitIdStr]
     end 
-    
+    local result = ParseCombatMessage(combatEvent, unpack(arg))
     if unitType ~= "npc" or (unitType == "npc" and unitFilters["NPCs"] == 1) then 
       if combatEvent == "SPELL_DAMAGE" or combatEvent == "SPELL_DOT_DAMAGE" or combatEvent == "MELEE_DAMAGE" then --> also needs "MELEE_DAMAGE"
-        
-        local result = ParseCombatMessage(combatEvent, unpack(arg))
         -- Record damage taken
         if stats["dmg_taken"][targetUnitIdStr] == nil then 
           stats["dmg_taken"][targetUnitIdStr] = tonumber(result.damage) * -1
@@ -1004,6 +1139,37 @@ local function OnLoad()
         end 
       end 
     end
+    -- Filling details
+    if combatEvent == "SPELL_DAMAGE" or combatEvent == "SPELL_DOT_DAMAGE" or combatEvent == "MELEE_DAMAGE" then 
+      if statsDetails["total_dmg"][source] == nil then 
+        statsDetails["total_dmg"][source] = {}
+      end
+      if statsDetails["total_dmg"][source][result.spellName] == nil then 
+        statsDetails["total_dmg"][source][result.spellName] = tonumber(result.damage) * -1
+      else
+        statsDetails["total_dmg"][source][result.spellName] = statsDetails["total_dmg"][source][result.spellName] + (tonumber(result.damage) * -1)
+      end
+
+      if statsDetails["dmg_taken"][target] == nil then 
+        statsDetails["dmg_taken"][target] = {}
+      end
+      if statsDetails["dmg_taken"][target][result.spellName] == nil then 
+        statsDetails["dmg_taken"][target][result.spellName] = tonumber(result.damage) * -1
+      else
+        statsDetails["dmg_taken"][target][result.spellName] = statsDetails["dmg_taken"][target][result.spellName] + (tonumber(result.damage) * -1)
+      end
+    end 
+    if combatEvent == "SPELL_HEALED" then 
+      -- api.Log:Info(result)
+      if statsDetails["total_healing"][source] == nil then 
+        statsDetails["total_healing"][source] = {}
+      end
+      if statsDetails["total_healing"][source][result.spellName] == nil then 
+        statsDetails["total_healing"][source][result.spellName] = tonumber(result.heal)
+      else
+        statsDetails["total_healing"][source][result.spellName] = statsDetails["total_healing"][source][result.spellName] + (tonumber(result.heal))
+      end
+    end 
   end 
 
 
@@ -1071,7 +1237,7 @@ local function OnLoad()
   function statsMeterWnd.moveWnd.filterButton:SelectedProc()
     selectedPage = statsMeterWnd.moveWnd.filterButton:GetSelectedIndex()
 
-    -- for i = 1, 5000 do
+    -- for i = 1, 50 do
     --   indexStr = tostring(i)
     --   randomNum = math.random(5000000, 100000000)
     --   name = "PogMan" .. indexStr
@@ -1155,6 +1321,7 @@ local function OnLoad()
     Update()
   end
   --  
+  api.Log:Info("[Stats Meter] Successfully loaded, Please find settings by pressing ESC and clicking 'Stats Meter' in the Addon Menu.")
 end
 
 local function OnUnload()
