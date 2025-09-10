@@ -5,7 +5,7 @@ local michaelClientLib = require("stats_meter/michael_client")
 local stats_meter_addon = {
 	name = "Stats Meter",
 	author = "Michaelqt",
-	version = "2.0.3",
+	version = "2.0.5",
 	desc = "A stats meter covering damage, heals and more!"
 }
 local statsMeterWnd = nil
@@ -446,15 +446,18 @@ local function Update()
           if unitType == "character" then
             isInPlayerGroup = (api.Team:IsPartyTeam() or api.Team:GetMemberIndexByName(unitName) ~= nil) and api.Team:GetMemberIndexByName(unitName) > 0
           end
+
+          -- Stop drawing DPS numbers if none are left.
+          if labelIndex > #statsMeterWnd.child then
+            break
+          end
+
           -- Delete skillsetIcon if it exists
           if statsMeterWnd.child[labelIndex].skillsetIcon ~= nil then
             statsMeterWnd.child[labelIndex].skillsetIcon:Show(false)
             statsMeterWnd.child[labelIndex].skillsetIcon = nil
           end      
-          -- Stop drawing DPS numbers if none are left.
-          if labelIndex > #statsMeterWnd.child then
-            break
-          end
+          
 
           -- Contrstructing display strings
           local text = ""
