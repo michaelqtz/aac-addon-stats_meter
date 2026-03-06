@@ -5,7 +5,7 @@ local michaelClientLib = require("stats_meter/michael_client")
 local stats_meter_addon = {
 	name = "Stats Meter",
 	author = "Michaelqt",
-	version = "2.0.5",
+	version = "2.0.6",
 	desc = "A stats meter covering damage, heals and more!"
 }
 local statsMeterWnd = nil
@@ -444,7 +444,7 @@ local function Update()
           local isInPlayerGroup = false
           -- Flag the member as in party if they are
           if unitType == "character" then
-            isInPlayerGroup = (api.Team:IsPartyTeam() or api.Team:GetMemberIndexByName(unitName) ~= nil) and api.Team:GetMemberIndexByName(unitName) > 0
+            isInPlayerGroup = (api.Team:IsPartyTeam() or api.Team:GetMemberIndexByName(unitName) ~= nil) and api.Team:GetMemberIndexByName(unitName) ~= 0 and api.Team:GetMemberIndexByName(unitName) ~= nil
           end
 
           -- Stop drawing DPS numbers if none are left.
