@@ -5,7 +5,7 @@ local michaelClientLib = require("stats_meter/michael_client")
 local stats_meter_addon = {
 	name = "Stats Meter",
 	author = "Michaelqt",
-	version = "2.0.6",
+	version = "2.1.0",
 	desc = "A stats meter covering damage, heals and more!"
 }
 local statsMeterWnd = nil
@@ -664,6 +664,17 @@ local function OnUpdate(dt)
       selectedPage = settings.mainFilter
       statsMeterWnd.moveWnd.filterButton:Select(selectedPage)
     end 
+    if settings.isMinimized ~= nil then 
+      if settings.isMinimized == 1 then 
+        minimizedWnd:Show(true)
+        statsMeterWnd:Show(false)
+      else
+        minimizedWnd:Show(false)
+        statsMeterWnd:Show(true)
+      end 
+    end
+
+
     firstLoad = false
   end 
 
@@ -731,6 +742,9 @@ local function OnLoad()
   end
   if settings["mainFilter"] == nil then
     settings["mainFilter"] = 1
+  end
+  if settings["isMinimized"] == nil then
+    settings["isMinimized"] = 0
   end
 
   --- Meter Settings window
@@ -1331,7 +1345,7 @@ local function OnLoad()
     self:SetText("Filters")
     Update()
   end
-  --  
+  -- 
   api.Log:Info("[Stats Meter] Successfully loaded, Please find settings by pressing ESC and clicking 'Stats Meter' in the Addon Menu.")
 end
 
@@ -1344,6 +1358,7 @@ local function OnUnload()
   settings.playerFilter = unitFilters["Players"]
   settings.hostileFilter = unitFilters["Hostiles"]
   settings.npcFilter = unitFilters["NPCs"]
+  settings.isMinimized = minimizedWnd:IsVisible() and 1 or 0
   api.SaveSettings()
   statsMeterWnd:ReleaseHandler("OnEvent")
   statsMeterWnd:ReleaseHandler("OnUpdate")
