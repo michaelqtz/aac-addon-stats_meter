@@ -1,16 +1,12 @@
 local api = require("api")
 local lib = {}
 
-local lib_addon = {
-    name = "Addon Menu Bar",
-    author = "Michaelqt",
-    version = "1.0",
-    desc = "A library to help create addon configuration menus."
-}
+-- A shared "Addon Options" menu on the ESC menu. Several addons ship this file and add their
+-- own button to the same menu, so an addon should only ever remove its own button.
 
-function initializeMichaelClient()
+function lib.initializeMichaelClient()
     local configMenu = ADDON:GetContent(UIC.SYSTEM_CONFIG_FRAME)
-    if configMenu.michaelClient == nil then 
+    if configMenu.michaelClient == nil then
         local michaelClient = configMenu:CreateChildWidget("label", "michaelClient", 0, true)
         michaelClient:AddAnchor("TOPLEFT", configMenu, -110, 5)
         michaelClient:SetExtent(110, 28)
@@ -23,7 +19,7 @@ function initializeMichaelClient()
         michaelClient.bg:SetColor(0, 0, 0, 0.5)
         michaelClient.bg:AddAnchor("TOPLEFT", michaelClient, 0, 0)
         michaelClient.bg:AddAnchor("BOTTOMRIGHT", michaelClient, 0, 0)
-        
+
         michaelClient.addonCount = 0
         function configMenu.michaelClient:AddAddon(title, callback)
             self.addonCount = self.addonCount + 1
@@ -42,31 +38,29 @@ function initializeMichaelClient()
                 addonButton.bg:AddAnchor("TOPLEFT", addonButton, 0, 0)
                 addonButton.bg:AddAnchor("BOTTOMRIGHT", addonButton, 0, 0)
 
-
                 self.addons[title] = addonButton
             end
             -- Also redraw the background
             local currentWidth = michaelClient.bg:GetWidth()
-            local currentHeight = self.addonCount * 30
-            -- michaelClient:SetExtent(currentWidth, currentHeight)
-            michaelClient.bg:SetExtent(currentWidth, currentHeight)
+            michaelClient.bg:SetExtent(currentWidth, self.addonCount * 30)
             michaelClient.bg:RemoveAllAnchors()
             michaelClient.bg:AddAnchor("TOPLEFT", michaelClient, 0, 0)
             michaelClient.bg:AddAnchor("BOTTOMRIGHT", michaelClient, 0,  michaelClient.addonCount * 30 + 10)
         end
-    end 
+    end
     return configMenu
-end 
-lib.initializeMichaelClient = initializeMichaelClient
+end
 
-function OnUnload()
+-- Remove one addon's button from the shared menu, leaving other addons' buttons in place
+function lib.removeAddon(title)
     local configMenu = ADDON:GetContent(UIC.SYSTEM_CONFIG_FRAME)
-	if configMenu.michaelClient ~= nil then 
-		configMenu.michaelClient:Show(false)
-		api.Interface:Free(configMenu.michaelClient)
-		configMenu.michaelClient = nil
-	end
-end 
-lib.OnUnload = OnUnload
+    local michaelClient = configMenu.michaelClient
+    if michaelClient == nil or michaelClient.addons == nil then return end
+    local addonButton = michaelClient.addons[title]
+    if addonButton ~= nil then
+        api.Interface:Free(addonButton)
+        michaelClient.addons[title] = nil
+    end
+end
 
 return lib
