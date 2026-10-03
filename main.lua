@@ -5,7 +5,7 @@ local michaelClientLib = require("stats_meter/michael_client")
 local stats_meter_addon = {
 	name = "Stats Meter",
 	author = "Michaelqt",
-	version = "2.1.0",
+	version = "2.2.0",
 	desc = "A stats meter covering damage, heals and more!"
 }
 local statsMeterWnd = nil
@@ -27,8 +27,7 @@ local firstLoad = true
 -- Changed by onclick on dropdown
 local selectedPage = 1
 
--- Names, types and factions
-local unitNames = {}
+-- Types and factions, keyed by unit name
 local unitTypes = {}
 local unitFactions = {}
 
@@ -168,12 +167,27 @@ local function tableCopy(t)
 end
 -- Remove entries for "nil" and "0" from the table.
 local function removeNilEntries(tbl)
-  local keysToRemove = { "0", "nil" }
-  for i, keyToRemove in ipairs(tbl) do
-    if tbl[keyToRemove] ~= nil then
-      tbl[keysToRemove] = nil
-    end 
-  end    
+  for _, keyToRemove in ipairs({ "0", "nil" }) do
+    tbl[keyToRemove] = nil
+  end
+end
+
+-- Set to true to print handler errors to chat (each distinct error once) when debugging
+local DEBUG = false
+local reportedErrors = {}
+local function reportError(where, err, ...)
+  if not DEBUG then return end
+  local msg = "[Stats Meter] Error in " .. where .. ": " .. tostring(err)
+  if reportedErrors[msg] then return end
+  reportedErrors[msg] = true
+  local args = {}
+  for i = 1, select("#", ...) do
+    args[#args + 1] = tostring((select(i, ...)))
+  end
+  if #args > 0 then
+    msg = msg .. " | args: " .. table.concat(args, ", ")
+  end
+  api.Log:Err(msg)
 end
 
 local function displayTimeString(timeInMs)
@@ -195,8 +209,7 @@ local function removeNilEntriesFromStats(stats)
 end
 
 local function saveLogFile()
-  -- Save current state of stats meter to a log file
-  stats["_NAMES"] = unitNames --> save names to the file as well 
+  -- Save current state of stats meter to a log file (stats are keyed by unit name)
   local timedLogPath = string.gsub(logPath, "template", tostring(startingTimer).. "-" .. tostring(api.Time:GetUiMsec()))
   api.File:Write(timedLogPath, stats)
 end
@@ -215,13 +228,7 @@ local function reinitializeMeter()
   statsDetails["total_dmg"] = {}
   statsDetails["total_healing"] = {}
   statsDetails["dmg_taken"] = {}
-  -- 
-  if stats["_NAMES"] ~= nil then 
-    stats["_NAMES"] = nil
-    unitNames = {}
-    unitFactions = {}
-    unitTypes = {}
-  end 
+  -- Unit type/faction caches are keyed by name and kept across resets
   startingTimer = api.Time:GetUiMsec()
 end 
 
@@ -237,8 +244,12 @@ end
 
 local function updateAbsorbedDmgNumbers()
   for key, value in pairs(stats["dmg_absorbed_raw"]) do
-    local totalDmgTaken = stats["dmg_taken"][key] + stats["dmg_absorbed_raw"][key]
-    stats["dmg_absorbed"][key] = tostring(math.floor((stats["dmg_absorbed_raw"][key] / totalDmgTaken) * 1000) / #statsMeterWnd.child)
+    local totalDmgTaken = (stats["dmg_taken"][key] or 0) + value
+    if totalDmgTaken > 0 then
+      stats["dmg_absorbed"][key] = tostring(math.floor((value / totalDmgTaken) * 1000) / 10)
+    else
+      stats["dmg_absorbed"][key] = "0"
+    end
   end
 end 
 
@@ -321,15 +332,6 @@ local function getPrettyAmountNumber(number)
   return prettyNumber
 end
 
-local function getUnitIdFromNames(unitName)
-  for unitId, name in pairs(unitNames) do
-    if name == unitName then
-      return unitId
-    end
-  end
-  return nil
-end 
-
 local function loadDamageBreakdown(unitName)
   -- detailsWindow.title:SetText("Damage Breakdown for " .. tostring(unitName))
   -- api.Log:Info("[Stats Meter] Loading damage breakdown for " .. tostring(unitName))
@@ -350,15 +352,14 @@ local function loadDamageBreakdown(unitName)
     detailsTable = "dmg_taken"
   end
 
-  local unitId = getUnitIdFromNames(unitName)
-  local totalDmg = stats["total_dmg"][unitId] or 0
-  local totalHealing = stats["total_healing"][unitId] or 0
-  local totalDmgTaken = stats["dmg_taken"][unitId] or 0
-  local totalDmgAbsorbed = stats["dmg_absorbed_raw"][unitId] or 0
-  local totalStat = stats[detailsTable][unitId] or 0
-  local dps = stats["dps"][unitId] or 0
-  local hps = stats["hps"][unitId] or 0
-  local dmgAbsorbedPercent = stats["dmg_absorbed"][unitId] or 0
+  local totalDmg = stats["total_dmg"][unitName] or 0
+  local totalHealing = stats["total_healing"][unitName] or 0
+  local totalDmgTaken = stats["dmg_taken"][unitName] or 0
+  local totalDmgAbsorbed = stats["dmg_absorbed_raw"][unitName] or 0
+  local totalStat = stats[detailsTable][unitName] or 0
+  local dps = stats["dps"][unitName] or 0
+  local hps = stats["hps"][unitName] or 0
+  local dmgAbsorbedPercent = stats["dmg_absorbed"][unitName] or 0
 
   local totalString = ""
   if detailsTable == "total_dmg" then 
@@ -384,40 +385,60 @@ local function loadDamageBreakdown(unitName)
   detailsWindow:Show(true)
 end 
 
+-- Store a unit's type/faction by name. Only takes non-nil values so partial info never
+-- wipes out something we already learned.
+local function cacheUnitInfoByName(unitName, unitInfo)
+  if unitName == nil or unitName == "" or unitInfo == nil then return end
+  if unitInfo.type ~= nil then unitTypes[unitName] = unitInfo.type end
+  if unitInfo.faction ~= nil then unitFactions[unitName] = unitInfo.faction end
+end
+
+-- Cache info for a unit id from a combat event. The client can only resolve ids for some
+-- units (yourself, NPCs, ...), so this is best effort: other players usually return nil here.
+local function cacheUnitInfo(unitId)
+  if unitId == nil then return end
+  local unitName = api.Unit:GetUnitNameById(unitId)
+  if unitName == nil or unitName == "" then return end
+  cacheUnitInfoByName(unitName, api.Unit:GetUnitInfoById(unitId))
+end
+
+-- Live info for a unit by name, via the unit tokens the client can always resolve:
+-- yourself, your party/raid members and your current target.
+local function getLiveUnitInfo(unitName)
+  local tokens = { "player", "target" }
+  local teamIndex = api.Team:GetMemberIndexByName(unitName)
+  if teamIndex ~= nil and teamIndex ~= 0 then
+    table.insert(tokens, "team" .. tostring(teamIndex))
+  end
+  for _, token in ipairs(tokens) do
+    local unitId = api.Unit:GetUnitId(token)
+    if unitId ~= nil and api.Unit:GetUnitNameById(unitId) == unitName then
+      return api.Unit:GetUnitInfoById(unitId)
+    end
+  end
+  return nil
+end
+
 -- Main Drawing Update Function
 local function Update()
   local cur = pages[selectedPage]
   -- Random shit
   local statNumbers = stats[cur.tableName]
-  local sortedUnitIds = getKeysSortedByValue(statNumbers, function(a, b) return a > b end)
+  local sortedUnitNames = getKeysSortedByValue(statNumbers, function(a, b) return a > b end)
 
   statsMeterWnd.moveWnd:SetText("")
   local labelIndex = 1
-  for _, unitId in ipairs(sortedUnitIds) do
+  for _, unitName in ipairs(sortedUnitNames) do
     -- Do not write the overall number down
-    if unitId ~= "_OVERALL" then
-      -- Relevant information for the current unit
-      local unitName = api.Unit:GetUnitNameById(unitId)
-      local unitInfo = api.Unit:GetUnitInfoById(unitId)
-      local unitFaction = "hostile"
-      local unitType = "npc"
-
-      ---- Loading information can only be done while a unit is rendered in, so we have to cache unit information.
-      -- If the unit is rendered locally, we can get it's info.
-      if unitInfo ~= nil then
-        unitFaction = unitInfo.faction
-        unitType = unitInfo.type
-        unitNames[unitId] = unitName
-        unitTypes[unitId] = unitType
-        unitFactions[unitId] = unitFaction
-      end
-      
-      -- If it's not rendered locally, let's load it from our local caches.
-      if unitNames[unitId] ~= nil or unitInfo ~= nil then 
-        unitName = tostring(unitNames[unitId])
-        unitFaction = tostring(unitFactions[unitId])
-        unitType = unitTypes[unitId]
-      end
+    if unitName ~= "_OVERALL" then
+      -- Stats are keyed by unit name. Refresh type/faction if the client can resolve the unit
+      -- right now, otherwise fall back to what we cached earlier.
+      local unitInfo = getLiveUnitInfo(unitName)
+      cacheUnitInfoByName(unitName, unitInfo)
+      -- Units we know nothing about are almost always other players (the client can't
+      -- resolve their ids), so treat them as non-hostile players instead of hiding them.
+      local unitType = unitTypes[unitName] or "character"
+      local unitFaction = unitFactions[unitName] or "unknown"
       ---- FILTERING DISPLAYED UNITS
       -- Firstly, do not show any "nils"
       if unitName ~= nil then
@@ -440,7 +461,7 @@ local function Update()
           (npcFilter == 1 and hostileFilter ~= 1 and playerFilter ~= 1) or
           (playerFilter == 1 and hostileFilter ~= 1 and unitFaction ~= "hostile") or 
           (playerFilter == 1 and hostileFilter == 1)) and allowThrough then
-          local statAmount = statNumbers[unitId]
+          local statAmount = statNumbers[unitName]
           local isInPlayerGroup = false
           -- Flag the member as in party if they are
           if unitType == "character" then
@@ -464,8 +485,11 @@ local function Update()
           local nameText = ""
           local amountText = ""
           -- Prettying up the % text in the label
-          local statAmountPercent = statAmount / statNumbers["_OVERALL"]
-          statAmountPercent = math.floor(statAmountPercent * 100 * 10) / 10
+          local overallAmount = statNumbers["_OVERALL"] or 0
+          local statAmountPercent = 0
+          if overallAmount ~= 0 then
+            statAmountPercent = math.floor(statAmount / overallAmount * 100 * 10) / 10
+          end
           -- Now, let's pretty up the statAmount
           if statAmount > 1000000 then -- Printing 1m -> infinity
             amountText = tostring(math.floor(statAmount / 1000000 * 10) / 10) .. "m"
@@ -477,13 +501,17 @@ local function Update()
 
           if statAmount then
             text = tostring(unitName) .. ": " .. tostring(amountText) .. " (" .. tostring(statAmountPercent) .. "%)"
-            nameText = tostring(unitId)
+            nameText = tostring(unitName)
             amountText = tostring(amountText)
           end    
           statsMeterWnd.child[labelIndex].bgStatusBar.statLabel:SetText(tostring(unitName))
           statsMeterWnd.child[labelIndex].bgStatusBar.statAmtLabel:SetText(tostring(amountText) .. " (" .. tostring(statAmountPercent) .. "%)")
           -- Setting status bar's value relative to the highest amount
-          local relativePercent = statAmount / statNumbers[sortedUnitIds[2]] * 100
+          local highestAmount = statNumbers[sortedUnitNames[2]] or 0
+          local relativePercent = 0
+          if highestAmount > 0 then
+            relativePercent = math.max(0, math.min(100, statAmount / highestAmount * 100))
+          end
           statsMeterWnd.child[labelIndex].bgStatusBar:SetValue(math.floor(relativePercent))
       
           -- Stylize status bar and label based on unit type (character or monster) and faction
@@ -1054,7 +1082,6 @@ local function OnLoad()
   -- Changed by onclick on dropdown
   selectedPage = 1
 
-  unitNames = {}
   unitTypes = {}
   unitFactions = {}
 
@@ -1065,105 +1092,58 @@ local function OnLoad()
   -- Relative timer for DPS/HPS meters
   startingTimer = api.Time:GetUiMsec()
 
-  -- Crude total dmg calc
-  local function addDmgNumber(sourceUnitId, targetUnitId, amount, skillType, hitOrMissType, weaponDamage, isSynergy, distance)
-    local sourceUnitIdStr = tostring(sourceUnitId)
-    
-    local unitName = api.Unit:GetUnitNameById(sourceUnitId)
-    local unitInfo = nil 
-    local unitType = nil
-    if unitTypes[sourceUnitIdStr] == nil then 
-      unitInfo = api.Unit:GetUnitInfoById(sourceUnitId)
-      if unitInfo ~= nil and unitInfo.type ~= nil then 
-        unitType = unitInfo.type
-        unitTypes[sourceUnitIdStr] = unitType
-      end 
-    else
-      unitType = unitTypes[sourceUnitIdStr]
-    end 
+  -- Spells that shouldn't count towards any stat
+  local ignoredSpells = {
+    ["Reset After Duel"] = true --> full heal when a duel ends
+  }
 
-    
-    local targetName = api.Unit:GetUnitNameById(targetUnitId)
-
-    if unitType ~= "npc" or (unitType == "npc" and unitFilters["NPCs"] == 1) then 
-      -- Add to individual player totals
-      if skillType == "SKILL" or skillType == "SWING" or skillType == "DOT" then 
-        if stats["total_dmg"][sourceUnitIdStr] == nil then
-          stats["total_dmg"][sourceUnitIdStr] = tonumber(amount) * -1
-        else  
-          stats["total_dmg"][sourceUnitIdStr] = stats["total_dmg"][sourceUnitIdStr] + (tonumber(amount) * -1)
-        end
-        -- Add to overall (all player) totals
-        if stats["total_dmg"]["_OVERALL"] == nil then
-          stats["total_dmg"]["_OVERALL"] = tonumber(amount) * -1
-        else
-          stats["total_dmg"]["_OVERALL"] = stats["total_dmg"]["_OVERALL"] + (tonumber(amount) * -1)
-        end
-      end
-      if skillType == "HEAL" then
-        if stats["total_healing"][sourceUnitIdStr] == nil then
-          stats["total_healing"][sourceUnitIdStr] = tonumber(amount)
-        else  
-          stats["total_healing"][sourceUnitIdStr] = stats["total_healing"][sourceUnitIdStr] + (tonumber(amount))
-        end
-        -- Add to overall (all player) totals
-        if stats["total_healing"]["_OVERALL"] == nil then
-          stats["total_healing"]["_OVERALL"] = tonumber(amount)
-        else
-          stats["total_healing"]["_OVERALL"] = stats["total_healing"]["_OVERALL"] + (tonumber(amount))
-        end
-      end
-    end
+  local function addToStat(tableName, unitName, amount)
+    stats[tableName][unitName] = (stats[tableName][unitName] or 0) + amount
+    stats[tableName]["_OVERALL"] = (stats[tableName]["_OVERALL"] or 0) + amount
   end
 
-  -- TODO: Crude Logging of combat messages. switch all non-personal logic over to this.
+  -- Units we know are NPCs are only counted when the NPC filter is on
+  local function isCountedUnit(unitName)
+    return unitTypes[unitName] ~= "npc" or unitFilters["NPCs"] == 1
+  end
+
+  -- COMBAT_TEXT is only used to learn unit types/factions. The stats themselves come from
+  -- COMBAT_MSG, because COMBAT_TEXT only gives unit ids, and the client can't resolve the
+  -- ids of other players to a name.
+  local function cacheCombatTextUnits(sourceUnitId, targetUnitId, ...)
+    cacheUnitInfo(sourceUnitId)
+    cacheUnitInfo(targetUnitId)
+  end
+
   local function processCombatMessage(targetUnitId, combatEvent, source, target, ...)
-    local targetUnitIdStr = tostring(targetUnitId)
-    local unitInfo = nil 
-    local unitType = nil
-    if unitTypes[targetUnitIdStr] == nil then 
-      unitInfo = api.Unit:GetUnitInfoById(targetUnitId)
-      if unitInfo ~= nil and unitInfo.type ~= nil then 
-        if unitInfo.type ~= nil then 
-          unitType = unitInfo.type
-          unitTypes[targetUnitIdStr] = unitType
-        end
-      end 
-    else
-      unitType = unitTypes[targetUnitIdStr]
-    end 
+    -- The target is in range right now, so cache its info for display later
+    cacheUnitInfo(targetUnitId)
     local result = ParseCombatMessage(combatEvent, unpack(arg))
-    if unitType ~= "npc" or (unitType == "npc" and unitFilters["NPCs"] == 1) then 
-      if combatEvent == "SPELL_DAMAGE" or combatEvent == "SPELL_DOT_DAMAGE" or combatEvent == "MELEE_DAMAGE" then --> also needs "MELEE_DAMAGE"
-        -- Record damage taken
-        if stats["dmg_taken"][targetUnitIdStr] == nil then 
-          stats["dmg_taken"][targetUnitIdStr] = tonumber(result.damage) * -1
-        else
-          stats["dmg_taken"][targetUnitIdStr] = stats["dmg_taken"][targetUnitIdStr] + (tonumber(result.damage) * -1)
-        end 
-        -- Add to overall damage taken totals
-        if stats["dmg_taken"]["_OVERALL"] == nil then 
-          stats["dmg_taken"]["_OVERALL"] = tonumber(result.damage) * -1
-        else
-          stats["dmg_taken"]["_OVERALL"] = stats["dmg_taken"]["_OVERALL"] + (tonumber(result.damage) * -1)
-        end 
-        -- Record damage abosrbed
-        if stats["dmg_absorbed_raw"][targetUnitIdStr] == nil then 
-          stats["dmg_absorbed_raw"][targetUnitIdStr] = tonumber(result.reduced) * 1
-        else
-          stats["dmg_absorbed_raw"][targetUnitIdStr] = stats["dmg_absorbed_raw"][targetUnitIdStr] + (tonumber(result.reduced) * 1)
-        end 
-        -- Add to overall damage absorbed totals
-        if stats["dmg_absorbed_raw"]["_OVERALL"] == nil then 
-          stats["dmg_absorbed_raw"]["_OVERALL"] = tonumber(result.reduced) * 1
-        else
-          stats["dmg_absorbed_raw"]["_OVERALL"] = stats["dmg_absorbed_raw"]["_OVERALL"] + (tonumber(result.reduced) * 1)
-        end 
-      end 
+    if result == nil then return end
+    if result.spellName ~= nil and ignoredSpells[result.spellName] then return end
+    local isDamageEvent = combatEvent == "SPELL_DAMAGE" or combatEvent == "SPELL_DOT_DAMAGE" or combatEvent == "MELEE_DAMAGE"
+    -- Skip messages missing the numbers we record, rather than half-recording them
+    if isDamageEvent and (tonumber(result.damage) == nil or tonumber(result.reduced) == nil) then return end
+    if combatEvent == "SPELL_HEALED" and tonumber(result.heal) == nil then return end
+
+    local hasSource = source ~= nil and source ~= ""
+    local hasTarget = target ~= nil and target ~= ""
+    if isDamageEvent then
+      local damage = tonumber(result.damage) * -1
+      if hasSource and isCountedUnit(source) then
+        addToStat("total_dmg", source, damage)
+      end
+      if hasTarget and isCountedUnit(target) then
+        addToStat("dmg_taken", target, damage)
+        addToStat("dmg_absorbed_raw", target, tonumber(result.reduced))
+      end
+    end
+    if combatEvent == "SPELL_HEALED" and hasSource and isCountedUnit(source) then
+      addToStat("total_healing", source, tonumber(result.heal))
     end
     -- Filling details
     if combatEvent == "SPELL_DAMAGE" or combatEvent == "SPELL_DOT_DAMAGE" or combatEvent == "MELEE_DAMAGE" then 
-      if source == nil or source == "" or result.spellName == nil or result.spellName == "" then 
+      if source == nil or source == "" or target == nil or target == "" or result.spellName == nil or result.spellName == "" then
         return
       end
       if statsDetails["total_dmg"][source] == nil then 
@@ -1184,7 +1164,10 @@ local function OnLoad()
         statsDetails["dmg_taken"][target][result.spellName] = statsDetails["dmg_taken"][target][result.spellName] + (tonumber(result.damage) * -1)
       end
     end 
-    if combatEvent == "SPELL_HEALED" then 
+    if combatEvent == "SPELL_HEALED" then
+      if source == nil or source == "" or result.spellName == nil or result.spellName == "" then
+        return
+      end
       -- api.Log:Info(result)
       if statsDetails["total_healing"][source] == nil then 
         statsDetails["total_healing"][source] = {}
@@ -1198,20 +1181,27 @@ local function OnLoad()
   end 
 
 
-  function statsMeterWnd:OnEvent(event, ...)
+  local function handleEvent(event, ...)
     if event == "COMBAT_TEXT" then
-      addDmgNumber(unpack(arg))
+      cacheCombatTextUnits(...)
       -- updateDpsHpsNumbers()
     end
     if event == "COMBAT_MSG" then
-      processCombatMessage(unpack(arg))
+      processCombatMessage(...)
       -- updateAbsorbedDmgNumbers()
     end
-    if event == "CHAT_JOINED_CHANNEL" then 
-      updateLastKnownChannels(unpack(arg))
-    end 
+    if event == "CHAT_JOINED_CHANNEL" then
+      updateLastKnownChannels(...)
+    end
     if event == "CHAT_LEAVED_CHANNEL" then
       return nil --> pass
+    end
+  end
+
+  function statsMeterWnd:OnEvent(event, ...)
+    local ok, err = pcall(handleEvent, event, ...)
+    if not ok then
+      reportError(tostring(event), err, ...)
     end
   end
   statsMeterWnd:SetHandler("OnEvent", statsMeterWnd.OnEvent)
@@ -1221,8 +1211,11 @@ local function OnLoad()
   statsMeterWnd:RegisterEvent("CHAT_LEAVED_CHANNEL")
 
   function statsMeterWnd:OnUpdate(dt)
-    OnUpdate(dt)
-  end 
+    local ok, err = pcall(OnUpdate, dt)
+    if not ok then
+      reportError("OnUpdate", err)
+    end
+  end
   statsMeterWnd:SetHandler("OnUpdate", statsMeterWnd.OnUpdate)
 
   -- Button Handlers
