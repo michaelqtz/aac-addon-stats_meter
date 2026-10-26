@@ -10,7 +10,7 @@ local ui = require("stats_meter/ui")
 local stats_meter_addon = {
   name = "Stats Meter",
   author = "Michaelqt",
-  version = "2.2.0",
+  version = "2.2.1",
   desc = "A stats meter covering damage, heals and more!"
 }
 

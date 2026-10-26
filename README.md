@@ -64,10 +64,13 @@ Every reset of a meter with data saves it to `Addon/stats_meter/logs/`, with the
 
 - The meter counts every combat message your client receives, so it includes anyone fighting within range, not just your group.
 - Percentages are out of the units currently shown, so they always add up to 100%. Changing a filter never loses data; hidden units are still recorded.
-- "Reset After Duel" (the full heal at the end of a duel) isn't counted as healing.
+- "Reset After Duel" (the full heal at the end of a duel) and Berserker's Hunger aren't counted as healing.
 - The addon API only lets the meter identify you, your party or raid members, and your current target. Anyone else (such as nearby players outside your group, or NPCs) isn't shown.
 
 ## Changelog
+
+### 2.2.1
+- Berserker's Hunger no longer counts as healing.
 
 ### 2.2.0
 - The meter now scrolls with the mouse wheel, and you're always pinned to the bottom row when you'd otherwise be out of view.
