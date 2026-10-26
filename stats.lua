@@ -24,7 +24,8 @@ local MELEE_NAME = "Melee Attack"
 
 -- Spells that shouldn't count towards any stat
 local IGNORED_SPELL_NAMES = {
-  ["Reset After Duel"] = true --> full heal when a duel ends
+  ["Reset After Duel"] = true, --> full heal when a duel ends
+  ["Berserker's Hunger"] = true
 }
 
 -- Whether a COMBAT_MSG type contributes to any stat (cheap check before parsing it)
