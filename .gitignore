@@ -1,0 +1,2 @@
+# Fight logs saved by the reset button are personal, never commit them
+logs/stats_meter_log_*.txt
